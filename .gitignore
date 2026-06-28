@@ -62,6 +62,7 @@ package-lock.json
 
 # Data / runtime (never commit these)
 data/
+!src-tauri/resources/data/
 skills-repos/**
 
 # Test / debug / scratch files

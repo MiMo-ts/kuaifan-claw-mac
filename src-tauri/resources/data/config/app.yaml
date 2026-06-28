@@ -1,0 +1,13 @@
+# 快泛 Claw 应用配置模板（首次安装时复制到 data/config/）
+# 详细字段说明由前端 UI 写入，本文件仅作占位模板
+app:
+  version: "1.0.0"
+  language: "zh-CN"
+openclaw:
+  registry: "https://registry.npmmirror.com"
+  allow_scripts: true
+  prefer_system_node: false
+  legacy_peer_deps: false
+ui:
+  theme: "system"
+  tray_enabled: true

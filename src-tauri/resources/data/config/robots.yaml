@@ -1,0 +1,4 @@
+# 机器人配置模板
+robots: []
+installed: []
+store_url: "https://kuaifanclaw.cn/api/public/bots"

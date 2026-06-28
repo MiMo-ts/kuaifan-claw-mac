@@ -1,0 +1,6 @@
+# 实例配置模板
+instances: []
+defaults:
+  port_range: [17000, 18000]
+  auto_start: false
+  log_retention_days: 7
