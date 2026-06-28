@@ -9,17 +9,7 @@ on:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-            arch: arm64
-          - platform: macos-13
-            target: x86_64-apple-darwin
-            arch: x64
-
-    runs-on: ${{ matrix.platform }}
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository
@@ -33,7 +23,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Install frontend dependencies
         working-directory: web
@@ -43,28 +33,32 @@ jobs:
         working-directory: web
         run: npm run build
 
-      - name: Build Tauri app
+      - name: Build ARM64 (Apple Silicon)
         working-directory: web
-        run: |
-          npm run tauri:build -- --target ${{ matrix.target }}
+        run: npm run tauri:build -- --target aarch64-apple-darwin
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Build X64 (Intel)
+        working-directory: web
+        run: npm run tauri:build -- --target x86_64-apple-darwin
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Upload arm64 artifact
-        if: matrix.arch == 'arm64'
         uses: actions/upload-artifact@v4
         with:
           name: 快泛claw-arm64
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           retention-days: 7
 
       - name: Upload x64 artifact
-        if: matrix.arch == 'x64'
         uses: actions/upload-artifact@v4
         with:
           name: 快泛claw-x64
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           retention-days: 7
 
   release:
