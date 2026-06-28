@@ -85,7 +85,7 @@ const CHANNEL_META: &[(&str, ChannelMeta)] = &[
         ChannelMeta {
             openclaw_channel_id: "wecom",
             single_account: true,
-            plugin_enabled_key: Some("wecom"),
+            plugin_enabled_key: Some("wecom-openclaw-plugin"),
             field_aliases: &[
                 ("botId", "botId"),
                 ("agentId", "botId"), // 向导里填的是 agentId → 映射到 botId
@@ -1077,7 +1077,7 @@ fn sync_disable_stale_single_account_channels(
 
 /// 将 `plugins.entries` 的键与各插件 manifest `id` 对齐，避免网关报 plugin id mismatch。
 ///
-/// - `wecom-openclaw-plugin` / `wecom-connector` → `wecom`（bundled stub manifest id 为 "wecom"，与 channel id 同）
+/// - `wecom-connector` → `wecom-openclaw-plugin`（保留原始插件 ID）
 /// - `qq` / `qq-connector` → `qqbot`（@sliverp/qqbot）
 /// - `dingtalk`（误用通道名）→ `dingtalk-connector`
 fn normalize_plugin_entries_keys(base: &mut serde_json::Value) {
@@ -1123,9 +1123,7 @@ fn normalize_plugin_entries_keys(base: &mut serde_json::Value) {
     }
 
     for (legacy, canonical) in [
-        ("wecom-openclaw-plugin", "wecom"),
-        ("wecom-connector", "wecom"),
-        ("qq", "qqbot"),
+        ("wecom-connector", "wecom-openclaw-plugin"),
         ("qq-connector", "qqbot"),
     ] {
         if let Some(v) = entries.remove(legacy) {
