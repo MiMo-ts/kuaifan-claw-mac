@@ -33,32 +33,18 @@ jobs:
         working-directory: web
         run: npm run build
 
-      - name: Build ARM64 (Apple Silicon)
+      - name: Build Universal Binary (Intel + ARM)
         working-directory: web
-        run: npm run tauri:build -- --target aarch64-apple-darwin
+        run: npm run tauri:build -- --target universal-apple-darwin
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Build X64 (Intel)
-        working-directory: web
-        run: npm run tauri:build -- --target x86_64-apple-darwin
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-      - name: Upload arm64 artifact
+      - name: Upload universal artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 快泛claw-arm64
-          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          retention-days: 7
-
-      - name: Upload x64 artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: 快泛claw-x64
-          path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          name: 快泛claw-universal
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           retention-days: 7
 
   release:
@@ -67,15 +53,10 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
-      - name: Download arm64 artifact
+      - name: Download universal artifact
         uses: actions/download-artifact@v4
         with:
-          name: 快泛claw-arm64
-
-      - name: Download x64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: 快泛claw-x64
+          name: 快泛claw-universal
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
