@@ -42,7 +42,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": ["nsis", "app", "dmg"],
     "shortDescription": "快泛claw 一站式安装与管理工具",
     "longDescription": "快泛claw — 一站式安装与管理系统，支持多平台、多通道机器人网关管理。",
     "category": "DeveloperTool",
@@ -58,7 +58,8 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico",
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.icns"
     ],
     "windows": {
       "certificateThumbprint": null,
@@ -76,9 +77,18 @@
     },
     "macOS": {
       "minimumSystemVersion": "10.15",
-      "entitlements": null,
       "exceptionDomain": null,
-      "signingIdentity": null
+      "frameworks": [],
+      "providerShortName": null,
+      "entitlements": "./entitlements.plist",
+      "signingIdentity": null,
+      "dmg": {
+        "background": null,
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        }
+      }
     }
   }
 }

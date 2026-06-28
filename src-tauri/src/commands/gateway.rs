@@ -1,6 +1,7 @@
-﻿// 网关控制命令 — 启动真实的 openclaw-cn `gateway` 子命令，并把管理端配置写入安装目录下的 openclaw.json
+// 网关控制命令 — 启动真实的 openclaw-cn `gateway` 子命令，并把管理端配置写入安装目录下的 openclaw.json
 
 use crate::commands::hidden_cmd;
+use crate::commands::installer::reap_zombie_children;
 use crate::commands::log::OPENCLAW_GATEWAY_LOG;
 use crate::commands::robot::get_robot_system_prompt;
 use crate::env_paths::{resolve_node, resolve_git};
@@ -1516,7 +1517,35 @@ fn merge_channels_patch_replace_accounts(base: &mut serde_json::Value, patch: se
             e.insert(k.clone(), v.clone());
         }
         if let Some(acc) = ch_obj.get("accounts") {
-            e.insert("accounts".to_string(), acc.clone());
+            // 关键修复：accounts 整表替换时，**保留**每个账号的敏感字段
+            // (allowFrom, appSecret, dmPolicy, groupPolicy 等) — 这些是用户/扫码流程
+            // 写入的，不应被 sync YAML 覆盖。
+            // 合并策略：
+            //   1. patch account 上的新字段（agent_id, model_ref 等）覆盖 base
+            //   2. base account 上 patch 没有的字段保留（allowFrom, appSecret, dmPolicy 等）
+            let mut merged = acc.clone();
+            if let Some(merged_obj) = merged.as_object_mut() {
+                if let Some(base_acc) = e.get("accounts").and_then(|a| a.as_object()) {
+                    for (base_key, base_acc_id) in base_acc {
+                        let Some(base_acc_obj) = base_acc_id.as_object() else {
+                            continue;
+                        };
+                        let patch_acc_obj = merged_obj
+                            .entry(base_key.clone())
+                            .or_insert_with(|| json!({}))
+                            .as_object_mut();
+                        if let Some(patch_acc_obj) = patch_acc_obj {
+                            for (k, v) in base_acc_obj {
+                                // patch 没有但 base 有的字段 → 保留
+                                if !patch_acc_obj.contains_key(k) {
+                                    patch_acc_obj.insert(k.clone(), v.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            e.insert("accounts".to_string(), merged);
         }
     }
 }
@@ -1591,6 +1620,29 @@ pub async fn sync_openclaw_config_from_manager(data_dir: &str) -> Result<(), Str
     }
 
     let mut patch = json!({ "gateway": gateway_patch });
+
+    // 禁用一组本 app 用不到、且在 Mac 上会因缺依赖 / TS 解析器不支持 `??` 而刷错误的扩展。
+    // （不删目录是为了保留升级 openclaw-cn 后能复用的可能性；deny 列表是 openclaw 官方支持的扩展控制机制。）
+    merge_json_deep(
+        &mut patch,
+        json!({
+            "plugins": {
+                "deny": [
+                    "nostr",                // 缺 nostr-tools
+                    "tlon",                  // 缺 @urbit/http-api
+                    "matrix",                // 缺 matrix-bot-sdk
+                    "memory-lancedb",        // 缺 @lancedb/lancedb
+                    "diagnostics-otel",      // 缺 @opentelemetry/api
+                    "minimax-portal-auth"    // 含 ES2020 `??`，老版 esbuild/swc 解析失败
+                ],
+                "entries": {
+                    "feishu": { "enabled": true },
+                    "openclaw-weixin": { "enabled": true },
+                    "wecom-openclaw-plugin": { "enabled": true }
+                }
+            }
+        }),
+    );
 
     if let Some(primary) = read_default_model_primary(data_dir) {
         merge_json_deep(
@@ -2466,13 +2518,25 @@ fn kill_windows_gateway_listen_ports_all_methods(port: u16) {
 }
 
 /// Unix：按端口结束 LISTEN 进程（无 lsof 时静默跳过）
+/// 使用 lsof + pgrep 双重检测，并 kill 进程树（-P 杀子进程）避免残留
 #[cfg(not(windows))]
 fn kill_unix_listeners_on_port(port: u16) {
+    // 第一轮：lsof 按端口查找 LISTEN 进程，kill 进程树
     let script = format!(
-        "pids=$(lsof -ti tcp:{} -sTCP:LISTEN 2>/dev/null); [ -n \"$pids\" ] && kill -9 $pids 2>/dev/null; true",
+        "pids=$(lsof -ti tcp:{} -sTCP:LISTEN 2>/dev/null); \
+         if [ -n \"$pids\" ]; then \
+           for p in $pids; do kill -9 -$p 2>/dev/null || kill -9 $p 2>/dev/null; done; \
+         fi; true",
         port
     );
     let _ = Command::new("sh").args(["-c", &script]).output();
+
+    // 第二轮：pgrep 按命令名查找 node gateway 进程（覆盖 lsof 未检测到的情况）
+    let script2 = "pids=$(pgrep -f 'node dist/entry(-hidden)?\\.js gateway' 2>/dev/null); \
+                    if [ -n \"$pids\" ]; then \
+                      for p in $pids; do kill -9 -$p 2>/dev/null || kill -9 $p 2>/dev/null; done; \
+                    fi; true";
+    let _ = Command::new("sh").args(["-c", script2]).output();
 }
 
 fn gateway_process_log_path(data_dir: &str) -> PathBuf {
@@ -2529,6 +2593,15 @@ fn attach_gateway_stdio_to_log(cmd: &mut Command, data_dir: &str) -> Result<(), 
     Ok(())
 }
 
+/// 快速检测端口是否被占用（单次尝试，500ms 超时）
+async fn is_port_listen(port: u16) -> bool {
+    let addr = (Ipv4Addr::LOCALHOST, port);
+    matches!(
+        tokio::time::timeout(Duration::from_millis(500), tokio::net::TcpStream::connect(addr)).await,
+        Ok(Ok(_))
+    )
+}
+
 /// 等待本机 TCP 端口可连接（网关 HTTP/WS 就绪）。
 /// 首次安装后 Node 冷启动、读盘较慢时可能超过 20s，故默认尝试次数较多。
 async fn wait_for_local_port_listen(port: u16, max_attempts: u32) -> bool {
@@ -2568,6 +2641,7 @@ fn stop_gateway_processes_best_effort(data_dir: &str) {
     }
 
     // 第二步：按状态文件 PID 再杀一次（覆盖第一步未清的边缘情况）
+    // macOS 上 child.id() 返回的是 sh 父进程 PID，需同时杀其子进程树
     if let Ok(content) = std::fs::read_to_string(&status_file) {
         if let Some(pid_str) = content.strip_prefix("pid:") {
             if let Ok(pid) = pid_str.trim().parse::<u32>() {
@@ -2589,7 +2663,14 @@ fn stop_gateway_processes_best_effort(data_dir: &str) {
                 }
                 #[cfg(not(windows))]
                 {
-                    let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+                    // 先杀进程组（负 PID = 杀整个进程组），覆盖 sh → node 子进程树
+                    let _ = Command::new("kill")
+                        .args(["-9", &format!("-{}", pid)])
+                        .output();
+                    // 再杀单个 PID 兜底（进程组可能不匹配时）
+                    let _ = Command::new("kill")
+                        .args(["-9", &pid.to_string()])
+                        .output();
                 }
             }
         }
@@ -2608,6 +2689,17 @@ fn stop_gateway_processes_best_effort(data_dir: &str) {
         for p in gateway_listen_ports_to_clear(port) {
             kill_unix_listeners_on_port(p);
         }
+    }
+
+    // 第四步：兜底 — 杀所有残留的 openclaw gateway node 进程
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("sh")
+            .args([
+                "-c",
+                "pkill -9 -f 'node dist/entry(-hidden)?\\.js gateway' 2>/dev/null; true",
+            ])
+            .output();
     }
 
     let _ = std::fs::remove_file(&status_file)
@@ -2701,6 +2793,18 @@ pub async fn get_gateway_status(
 /// 供 `start_gateway` 与「仅路径」场景复用（例如新建微信实例后需在无 `State` 时重启网关）。
 pub async fn start_gateway_with_data_dir_path(data_dir: &str) -> Result<String, String> {
     let openclaw_dir = format!("{}/openclaw-cn", data_dir);
+
+    // 安全网 1：reap 任何 zombie 子进程
+    // 上次启动的 gateway 若被 SIGKILL 而父进程没及时 wait，PID 会变成 (node) 僵尸。
+    // openclaw-cn 的 lock 库用 kill(pid, 0) 检测存活 → 僵尸仍被认为"活"，导致新进程
+    // 等 5s 后报 "lock timeout"。这里用 SIGCHLD 通知父进程 reap 所有 zombie。
+    #[cfg(unix)]
+    reap_zombie_children();
+
+    // 安全网 2：每次启动网关前都尝试清理一次冲突的全局 launchd 服务
+    // （com.clawdbot.gateway 来自旧的 `npm install -g @dragonforce2010/openclaw-cn`，
+    // 它会与本 app 抢端口 18789 并持续刷 "Missing config" 错误）。
+    crate::commands::installer::cleanup_stale_clawdbot_launchd_service();
 
     if !Path::new(&openclaw_dir).exists() {
         return Err("OpenClaw-CN 未安装，请先完成安装向导".to_string());
@@ -2838,13 +2942,37 @@ await import("./entry.js");
     // 按 instances.yaml 自动准备通道插件（复制 extensions、依赖、编译 dist），并同步 plugins.load.paths
     crate::commands::plugin::ensure_plugins_for_enabled_instances(data_dir).await;
 
-    // 启动前强制两轮「停止 + 清端口」，避免残留 node 占端口导致「未在端口监听」
-    info!("启动前：停止旧网关并清理端口（第一轮）");
-    stop_gateway_processes_best_effort(data_dir);
-    tokio::time::sleep(Duration::from_millis(1200)).await;
-    info!("启动前：停止旧网关并清理端口（第二轮）");
-    stop_gateway_processes_best_effort(data_dir);
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let listen_port = resolve_gateway_http_port(data_dir);
+
+    // 检查网关是否已在运行（状态文件 + 端口双重检测），避免重复启动
+    {
+        let status = get_gateway_status_internal(data_dir).await.unwrap_or_default();
+        if status.running {
+            info!("网关已在运行（端口 {}），跳过启动", listen_port);
+            return Ok(format!("网关已在运行，端口 {}", listen_port));
+        }
+        // 状态文件可能尚未写入，直接检测端口
+        if is_port_listen(listen_port).await {
+            info!("端口 {} 已被占用，网关可能已在运行，创建状态文件", listen_port);
+            // 创建状态文件以便 get_gateway_status 能正确检测
+            let status_file = format!("{}/gateway.status", data_dir);
+            let _ = tokio::fs::write(&status_file, "pid:external").await;
+            return Ok(format!("网关已在运行，端口 {}", listen_port));
+        }
+    }
+
+    // 启动前清理残留进程，避免端口冲突
+    for round in 1..=3 {
+        info!("启动前：清理残留进程（第{}轮）", round);
+        stop_gateway_processes_best_effort(data_dir);
+        tokio::time::sleep(Duration::from_millis(800)).await;
+
+        let port_free = !is_port_listen(listen_port).await;
+        if port_free {
+            break;
+        }
+        tracing::warn!("端口 {} 仍被占用，进行第{}轮清理", listen_port, round);
+    }
 
     log_gateway_spawn_banner(data_dir);
 
@@ -2864,7 +2992,7 @@ await import("./entry.js");
         .await
         .map_err(|e| format!("写入状态文件失败: {}", e))?;
 
-    let listen_port = resolve_gateway_http_port(data_dir);
+    // listen_port 已在清理循环中声明
     // 约 100 × (500ms 连接超时 + 150ms 间隔) ≈ 65s 量级上限，覆盖冷启动
     if !wait_for_local_port_listen(listen_port, 100).await {
         let _ = tokio::fs::remove_file(&status_file).await;
@@ -2918,9 +3046,26 @@ pub async fn restart_gateway_if_running_for_wechat_config(data_dir: &str) -> Res
 
 #[tauri::command]
 pub async fn start_gateway(data_dir: tauri::State<'_, crate::AppState>) -> Result<String, String> {
-    info!("启动网关...");
-
     let data_dir = data_dir.inner().get_data_dir();
+    let port = resolve_gateway_http_port(&data_dir);
+
+    // 先检查状态文件
+    let status = get_gateway_status_internal(&data_dir).await.unwrap_or_default();
+    if status.running {
+        info!("网关已在运行（端口 {}），跳过重复启动", status.port);
+        return Ok(format!("网关已在运行，端口 {}", status.port));
+    }
+
+    // 状态文件可能不存在，直接检测端口
+    if is_port_listen(port).await {
+        info!("端口 {} 已被占用，网关可能已在运行，创建状态文件", port);
+        // 创建状态文件以便 get_gateway_status 能正确检测
+        let status_file = format!("{}/gateway.status", data_dir);
+        let _ = tokio::fs::write(&status_file, "pid:external").await;
+        return Ok(format!("网关已在运行，端口 {}", port));
+    }
+
+    info!("启动网关...");
     start_gateway_with_data_dir_path(&data_dir).await
 }
 
@@ -3006,10 +3151,17 @@ fn spawn_gateway_process(
 
     #[cfg(not(windows))]
     {
+        // Mac GUI 子进程不会继承用户的完整 PATH（只有 /usr/bin:/bin:/usr/sbin:/sbin），
+        // 找不到 node / git / openclaw-cn 的 bin 工具。必须用 build_deps_env_path 主动
+        // prepend 内置或系统 node/git 目录（同时追加 /usr/local/bin 和 /opt/homebrew/bin），
+        // 否则子进程 `sh -c "node ..."` 会 `sh: node: command not found` 然后立刻退出。
+        let new_path = crate::env_paths::build_deps_env_path(data_dir);
+
         let mut c = Command::new("sh");
         c.arg("-c")
             .arg("node dist/entry.js gateway")
             .current_dir(openclaw_dir)
+            .env("PATH", &new_path)
             .env("OPENCLAW_CONFIG_PATH", config_abs)
             .env("OPENCLAW_STATE_DIR", state_abs)
             .env("OPENCLAW_GATEWAY_TOKEN", gateway_token)

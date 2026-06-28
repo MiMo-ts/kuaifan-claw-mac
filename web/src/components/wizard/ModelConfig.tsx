@@ -560,30 +560,38 @@ export default function ModelConfig({ onNext, onPrev }: Props) {
 
   const handleSave = async () => {
     try {
-      await invoke("save_provider_config", {
-        providerId: selectedProvider,
-        apiKey,
-        proxyUrl: proxyUrl || null,
-        proxyUsername: proxyUsername || null,
-        proxyPassword: proxyPassword || null,
-      });
+      const name = resolvedModelName.trim();
+      if (setDefault && !name) {
+        toast.error(
+          "无法写入全局默认模型：当前未选中具体模型。请先点击下方列表中的某一模型，再保存（填写 API Key 后列表会刷新，需重新点选模型）。",
+          { duration: 7000 },
+        );
+        return false;
+      }
+      // 一次写入：把供应商配置（api_key + proxy）和 default_model 合并到同一个
+      // set_default_model 调用中。后端会原子地 upsert 两个块并 sync_all。
+      // 当 setDefault=false 时，apiKey/proxy 仍需保存 → 退化为只写供应商块。
       if (setDefault) {
-        const name = resolvedModelName.trim();
-        if (!name) {
-          toast.error(
-            "无法写入全局默认模型：当前未选中具体模型。请先点击下方列表中的某一模型，再保存（填写 API Key 后列表会刷新，需重新点选模型）。",
-            { duration: 7000 },
-          );
-          return false;
-        }
         await invoke("set_default_model", {
           provider: selectedProvider,
           modelName: name,
+          apiKey: apiKey || null,
+          proxyUrl: proxyUrl || null,
+          proxyUsername: proxyUsername || null,
+          proxyPassword: proxyPassword || null,
+        });
+      } else {
+        await invoke("save_provider_config", {
+          providerId: selectedProvider,
+          apiKey,
+          proxyUrl: proxyUrl || null,
+          proxyUsername: proxyUsername || null,
+          proxyPassword: proxyPassword || null,
         });
       }
       toast.success(
         setDefault
-          ? "已保存：全局默认模型已写入配置并同步到 openclaw.json，请启动或重启网关后生效。"
+          ? "已保存：供应商配置 + 全局默认模型已原子写入配置，请启动或重启网关后生效。"
           : "供应商配置已保存",
         { duration: 4000 },
       );
@@ -812,9 +820,29 @@ export default function ModelConfig({ onNext, onPrev }: Props) {
                       key={m.id}
                       m={m}
                       active={selectedModel === m.id}
-                      onClick={() => {
+                      onClick={async () => {
                         setSelectedModel(m.id);
                         if (m.id !== VOLC_CUSTOM_EP) setVolcCustomEpId("");
+                        // 选中即设为默认：与当前表单的 apiKey / proxy 一起原子写入。
+                        // 已勾选「设为全局默认」时同 handleSave；未勾选时也走一次写盘，
+                        // 避免用户后续忘记点保存按钮时配置丢失。
+                        try {
+                          await invoke("set_default_model", {
+                            provider: selectedProvider,
+                            modelName: m.id,
+                            apiKey: apiKey || null,
+                            proxyUrl: proxyUrl || null,
+                            proxyUsername: proxyUsername || null,
+                            proxyPassword: proxyPassword || null,
+                          });
+                          setSetDefault(true);
+                          toast.success(
+                            `已选中并设为默认：${selectedProvider} / ${m.id}`,
+                            { duration: 2500 },
+                          );
+                        } catch (e) {
+                          console.error("set_default_model (on click) failed:", e);
+                        }
                       }}
                     />
                   ))}

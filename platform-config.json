@@ -7,10 +7,13 @@
       "artifactDir": "src-tauri\\target\\release"
     },
     "macos": {
-      "targets": ["aarch64-apple-darwin", "x86_64-apple-darwin"],
+      "targets": ["aarch64-apple-darwin", "x86_64-apple-darwin", "universal-apple-darwin"],
       "outputDir": "mac",
-      "buildCommand": "npm run tauri:build -- --target aarch64-apple-darwin --target x86_64-apple-darwin",
-      "artifactDir": "src-tauri\\target"
+      "buildCommand": "bash ./build-mac.sh",
+      "artifactDir": "src-tauri/target",
+      "signingIdentity": "${APPLE_SIGNING_IDENTITY}",
+      "entitlements": "src-tauri/entitlements.plist",
+      "minimumSystemVersion": "10.15"
     }
   }
 }

@@ -7,18 +7,23 @@
 //! - **release 严格**：release 模式缺失任何必需文件时 panic，打印明确的手动修复指引。
 //! - **debug 宽松**：debug 模式只打警告，不断言，避免阻塞本地开发调试。
 //!
-//! ## 必需文件清单（release 模式必须全部存在）
+//! ## 必需文件清单（release 模式必须全部存在；按构建 target 自动选平台）
 //!
-//! | 相对路径                              | 最小大小    | 描述          |
-//! |-------------------------------------|-----------|-------------|
-//! | `bundled-env/node-v22.14.0-win-x64.zip`  | 5 MB     | Node.js 离线包 |
-//! | `bundled-env/MinGit-2.53.0-64-bit.zip`  | 400 KB   | MinGit 离线包  |
-//! | `bundled-openclaw/openclaw-cn.zip`        | 1 MB     | openclaw-cn npm 包 |
-//! | `resources/data/config/app.yaml`         | >0 B     | 应用配置模板    |
-//! | `resources/data/config/instances.yaml`   | >0 B     | 实例配置模板    |
-//! | `resources/data/config/models.yaml`      | >0 B     | 模型配置模板    |
-//! | `resources/data/config/plugins.yaml`     | >0 B     | 插件配置模板    |
-//! | `resources/data/config/robots.yaml`      | >0 B     | 机器人配置模板  |
+//! | 相对路径                                           | 最小大小   | 平台                | 描述          |
+//! |--------------------------------------------------|----------|-------------------|-------------|
+//! | `bundled-env/node-v22.14.0-win-x64.zip`          | 5 MB     | Windows x64       | Node.js 离线包 |
+//! | `bundled-env/node-v22.14.0-darwin-arm64.tar.gz`  | 25 MB    | macOS Apple Silicon | Node.js 离线包 |
+//! | `bundled-env/node-v22.14.0-darwin-x64.tar.gz`    | 25 MB    | macOS Intel        | Node.js 离线包 |
+//! | `bundled-env/node-v22.14.0-linux-x64.tar.gz`     | 25 MB    | Linux x64         | Node.js 离线包 |
+//! | `bundled-env/MinGit-2.53.0-64-bit.zip`           | 400 KB   | Windows x64       | MinGit 离线包  |
+//! | `bundled-openclaw/openclaw-cn.zip`               | 1 MB     | 全平台              | openclaw-cn npm 包 |
+//! | `resources/data/config/app.yaml`                | >0 B     | 全平台              | 应用配置模板    |
+//! | `resources/data/config/instances.yaml`          | >0 B     | 全平台              | 实例配置模板    |
+//! | `resources/data/config/models.yaml`             | >0 B     | 全平台              | 模型配置模板    |
+//! | `resources/data/config/plugins.yaml`            | >0 B     | 全平台              | 插件配置模板    |
+//! | `resources/data/config/robots.yaml`             | >0 B     | 全平台              | 机器人配置模板  |
+//!
+//! 注：macOS / Linux 不内置 MinGit，系统通常已自带（Xcode CLT / 系统包）。
 //!
 //! ## 安全检查
 //!
@@ -28,14 +33,18 @@
 use std::fs;
 use std::path::PathBuf;
 
-/// Returns the platform-specific bundled file name and minimum size.
-/// macOS: None (Node.js 从 npmmirror 下载，不打包内置包以节省体积)
+/// Returns the platform-specific bundled Node.js file name and minimum size.
 /// Windows: node-v22.14.0-win-x64.zip
+/// macOS Apple Silicon: node-v22.14.0-darwin-arm64.tar.gz
+/// macOS Intel: node-v22.14.0-darwin-x64.tar.gz
 /// Linux: node-v22.14.0-linux-x64.tar.gz
 fn bundled_node_filename() -> Option<(&'static str, u64)> {
     #[cfg(target_os = "macos")]
     {
-        None
+        #[cfg(target_arch = "aarch64")]
+        return Some(("node-v22.14.0-darwin-arm64.tar.gz", 25 * 1024 * 1024));
+        #[cfg(target_arch = "x86_64")]
+        return Some(("node-v22.14.0-darwin-x64.tar.gz", 25 * 1024 * 1024));
     }
     #[cfg(target_os = "windows")]
     {
@@ -43,19 +52,19 @@ fn bundled_node_filename() -> Option<(&'static str, u64)> {
     }
     #[cfg(target_os = "linux")]
     {
-        Some(("node-v22.14.0-linux-x64.tar.gz", 5 * 1024 * 1024))
+        Some(("node-v22.14.0-linux-x64.tar.gz", 25 * 1024 * 1024))
     }
 }
 
 /// Returns the platform-specific MinGit bundled file name and minimum size.
+///
+/// macOS 不内置 MinGit：系统已通过 Xcode Command Line Tools 自带 git，
+/// 且 env_paths.rs 优先探测 `/usr/bin/git` → `/opt/homebrew/bin/git` → `/usr/local/bin/git`。
+/// 强制打包 MinGit 既无意义也会因为 MinGit 官方只发 .zip 而破坏 release 断言。
 fn bundled_mingit_filename() -> Option<(&'static str, u64)> {
     #[cfg(target_os = "macos")]
     {
-        // MinGit does not ship a macOS tarball. Use PortableGit from git-for-windows.
-        #[cfg(target_arch = "aarch64")]
-        return Some(("mingit-2.53.0-arm64.tar.gz", 10 * 1024 * 1024));
-        #[cfg(target_arch = "x86_64")]
-        return Some(("mingit-2.53.0-intel.tar.gz", 10 * 1024 * 1024));
+        None
     }
     #[cfg(target_os = "windows")]
     {
@@ -74,6 +83,9 @@ const REQUIRED_CONFIG_FILES: &[&str] = &[
     "plugins.yaml",
     "robots.yaml",
 ];
+
+/// 内置环境包目录（与 tauri.conf.json `bundle.resources` 中的 `bundled-env/*` 一致）
+const BUNDLED_ENV_DIR: &str = "bundled-env";
 
 const FORBIDDEN_DATA_SUBDIRS: &[&str] = &[
     "backups",
@@ -170,25 +182,26 @@ fn main() {
         let mut missing_files: Vec<String> = Vec::new();
 
         // 2a. Build the actual bundle list with platform-specific filenames
-        // macOS: Node.js 从 npmmirror 下载，不打包内置包
         let node_bundle = bundled_node_filename();
         let mingit = bundled_mingit_filename();
 
-        let mut actual_bundles: Vec<(&str, u64, &str)> = Vec::new();
+        let mut actual_bundles: Vec<(&str, &str, u64, &str)> = Vec::new();
         if let Some((file, min)) = node_bundle {
-            actual_bundles.push((file, min, "Node.js 离线包"));
+            actual_bundles.push((BUNDLED_ENV_DIR, file, min, "Node.js 离线包"));
         }
         if let Some((file, min)) = mingit {
-            actual_bundles.push((file, min, "MinGit 离线包"));
+            actual_bundles.push((BUNDLED_ENV_DIR, file, min, "MinGit 离线包"));
         }
+        // openclaw-cn.zip 不在 bundled-env/ 下，独立目录
         actual_bundles.push((
-            "bundled-openclaw/openclaw-cn.zip",
+            "bundled-openclaw",
+            "openclaw-cn.zip",
             1024 * 1024,
             "openclaw-cn npm 包 (openclaw-cn.zip)",
         ));
 
-        for (rel_path, min_bytes, desc) in actual_bundles {
-            let full = md.join(rel_path);
+        for (subdir, rel_path, min_bytes, desc) in actual_bundles {
+            let full = md.join(subdir).join(rel_path);
             if !file_sufficient(&full, min_bytes) {
                 let info = print_file_info(&full);
                 missing_files.push(format!(

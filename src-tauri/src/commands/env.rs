@@ -3,12 +3,12 @@
 use crate::commands::hidden_cmd;
 use crate::env_paths::{env_root, npm_exe, resolve_git, resolve_node};
 use crate::models::{EnvAutoFixResult, EnvCheckResult, EnvItem, EnvStatus};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::time::Duration;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 #[cfg(target_os = "macos")]
 use crate::mirror::InstallProgressEvent;
 use tracing::{info, warn};

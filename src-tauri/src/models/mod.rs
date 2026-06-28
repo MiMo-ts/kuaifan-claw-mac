@@ -170,7 +170,7 @@ pub struct Instance {
 }
 
 // 网关状态
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayStatus {
     pub running: bool,
     pub version: Option<String>,

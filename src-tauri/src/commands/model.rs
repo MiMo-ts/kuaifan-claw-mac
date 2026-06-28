@@ -2851,6 +2851,16 @@ pub async fn set_default_model(
 
     model_name: String,
 
+    // 可选：同时把该供应商的 api_key 一并写入（用户选模型时一并触发）。
+    // 若为 None / 空字符串，则不动供应商的 api_key 块。
+    api_key: Option<String>,
+
+    proxy_url: Option<String>,
+
+    proxy_username: Option<String>,
+
+    proxy_password: Option<String>,
+
 ) -> Result<String, String> {
 
     let provider = provider.trim().to_string();
@@ -2887,7 +2897,69 @@ pub async fn set_default_model(
 
     // 之前的实现对整个文件遍历，会错误替换 providers.*.provider 等无关行。
 
-    let new_content = upsert_default_model_block(&content, &provider, &model_name);
+    let mut new_content = upsert_default_model_block(&content, &provider, &model_name);
+
+
+
+    // 一次性合并写入：若调用方传了 api_key / proxy，也同步写进 providers.<provider> 块，
+
+    // 避免「选完模型后还要再单独点保存供应商」的两步操作。
+
+    let key_opt = api_key.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+    let proxy_opt = proxy_url.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+    let proxy_user_opt = proxy_username.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+    let proxy_pass_opt = proxy_password.as_deref().map(str::trim).filter(|s| !s.is_empty());
+
+    if key_opt.is_some() || proxy_opt.is_some() || proxy_user_opt.is_some() || proxy_pass_opt.is_some() {
+
+        // 加密 api_key（与 save_provider_config 同一套加密）
+
+        if let Some(plain_key) = key_opt {
+
+            let data_dir_for_key = data_dir.clone();
+
+            let plain_key_owned = plain_key.to_string();
+
+            let encrypted = tokio::task::spawn_blocking(move || -> Result<String, String> {
+
+                let key = crate::services::cipher::get_or_create_cipher_key_sync(&data_dir_for_key)
+
+                    .map_err(|e| format!("获取加密密钥失败: {}", e))?;
+
+                Ok(crate::services::cipher::encrypt_credential(&plain_key_owned, &key))
+
+            })
+
+            .await
+
+            .map_err(|e| format!("加密任务失败: {}", e))??;
+
+            new_content = upsert_provider_api_key(&new_content, &provider, &encrypted);
+
+        }
+
+        if proxy_opt.is_some() || proxy_user_opt.is_some() || proxy_pass_opt.is_some() {
+
+            new_content = upsert_provider_proxy_config(
+
+                &new_content,
+
+                &provider,
+
+                proxy_opt.unwrap_or(""),
+
+                proxy_user_opt.unwrap_or(""),
+
+                proxy_pass_opt.unwrap_or(""),
+
+            );
+
+        }
+
+    }
 
 
 

@@ -1,6 +1,6 @@
 [package]
 name = "快泛claw"
-version = "1.0.25"
+version = "1.0.52"
 description = "快泛claw - 一站式安装与管理系统"
 authors = ["快泛科技"]
 edition = "2021"
@@ -61,6 +61,9 @@ qrcode = { version = "0.14", default-features = false, features = ["image"] }
 [dev-dependencies]
 tempfile = "3.14"
 
-# 修复 macOS 上的 webview_version 崩溃问题
+# 修复 macOS 上 wry::webview_version() 崩溃问题
+# 直接 patch wry 0.55.0（在 src/wkwebview/mod.rs 的 platform_webview_version
+# 入口加 cfg(target_os = "macos") 短路）。tauri-runtime-wry 自身的 patch 因
+# deps 版本与 lock 不一致，cargo 报 "not used" 始终未生效。
 [patch.crates-io]
-tauri-runtime-wry = { path = "patches/tauri-runtime-wry" }
+wry = { path = "patches/wry" }

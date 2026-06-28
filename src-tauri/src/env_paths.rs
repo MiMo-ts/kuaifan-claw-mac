@@ -8,6 +8,11 @@
 //   - build_deps_env_path：若用系统工具则不修改 PATH，若用内置则 prepend 内置目录
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::Emitter;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tracing::info;
 
 #[cfg(windows)]
@@ -707,12 +712,12 @@ fn move_dir_contents(src: &Path, dest: &Path) -> Result<(), String> {
 
 /// 在指定目录中运行 git clone（使用绝对路径的 git）
 pub async fn git_clone_with_exe(
-    _git_path: &Path,
+    git_path: &Path,
     url: &str,
     dest: &Path,
     branch: Option<&str>,
-    _stage: &str,
-    _app: &tauri::AppHandle,
+    stage: &str,
+    app: &tauri::AppHandle,
 ) -> Result<(), String> {
     
     

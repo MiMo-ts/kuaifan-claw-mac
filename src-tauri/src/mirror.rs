@@ -3,9 +3,12 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tracing::{info, warn};
 
 /// GitHub/git 外部资源拉取已全局禁止，仅使用本地内置包
@@ -1106,8 +1109,8 @@ async fn git_clone_single(
     url: &str,
     dest: &Path,
     branch: Option<&str>,
-    _stage: &str,
-    _app: &AppHandle,
+    stage: &str,
+    app: &AppHandle,
 ) -> Result<(), String> {
     let dest_str = dest.to_string_lossy().to_string();
 

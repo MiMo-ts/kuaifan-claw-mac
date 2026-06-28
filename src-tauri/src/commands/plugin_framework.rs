@@ -712,7 +712,10 @@ async fn save_feishu_credentials_inner(
                             .collect();
                         if !fs_users.contains(&oid) {
                             fs_users.push(oid);
-                            fs.insert("allowFrom".into(), serde_json::json!(fs_users.join(",")));
+                            // 必须写数组 ["ou_xxx", ...] 而非字符串 "ou_xxx,ou_yyy"！
+                            // 飞书 plugin 的 config.js 用 (allowFrom ?? []).map(String) 解析，
+                            // 字符串没有 .map() 会抛 "((intermediate value) ?? (intermediate value) ?? []).map is not a function"
+                            fs.insert("allowFrom".into(), serde_json::json!(fs_users));
                         }
                     }
                 }
@@ -723,7 +726,8 @@ async fn save_feishu_credentials_inner(
                             o.insert("appSecret".into(), serde_json::json!(app_secret));
                             if let Some(oid) = user_open_id {
                                 if !oid.is_empty() {
-                                    o.insert("allowFrom".into(), serde_json::json!(oid));
+                                    // 同样必须写数组，单个 open_id 也要包成 ["ou_xxx"]
+                                    o.insert("allowFrom".into(), serde_json::json!([oid]));
                                 }
                             }
                         }
@@ -736,7 +740,125 @@ async fn save_feishu_credentials_inner(
             .map_err(|e| format!("写入:{}", e))?;
     }
 
+    // 关键：飞书配置写入后必须让 openclaw-cn 跑 `doctor --fix`，否则网关启动会报
+    // "Feishu configured, not enabled yet" 并要求手动 doctor fix，导致飞书 plugin 不加载。
+    // doctor --fix 会把 plugins.entries.feishu.enabled 设为 true，并补全其他依赖。
+    let _ = run_openclaw_cn_doctor_fix(data_dir).await;
+
     // 若网关运行中则重启
     let _ = crate::commands::gateway::restart_gateway_if_running_for_wechat_config(data_dir).await;
     Ok(())
+}
+
+/// 在飞书/微信/其他通道绑定后调用 `openclaw-cn doctor --fix`，
+/// 让 openclaw-cn 自行把 plugins.entries.<channel>.enabled 设为 true，并补全所有依赖。
+///
+/// 背景：openclaw-cn 在检测到 `channels.feishu` 有配置但 `plugins.entries.feishu.enabled=false`
+/// 时，会在启动时打印 "Feishu configured, not enabled yet. Run openclaw-cn doctor --fix"
+/// 并直接 exit code 1 → 我们的 Rust spawn 检测到子进程退出 → 报"启动失败"。
+/// 在生产代码里手动跑 `doctor --fix` 一次即可让 plugin 真正生效。
+async fn run_openclaw_cn_doctor_fix(data_dir: &str) {
+    use std::process::Command;
+    let openclaw_dir = std::path::PathBuf::from(data_dir).join("openclaw-cn");
+    if !openclaw_dir.exists() {
+        return;
+    }
+    // 找 node：用 build_deps_env_path 拉上 /usr/local/bin、/opt/homebrew/bin
+    let new_path = crate::env_paths::build_deps_env_path(data_dir);
+    let result = tokio::task::spawn_blocking(move || {
+        Command::new("node")
+            .arg("dist/entry.js")
+            .arg("doctor")
+            .arg("--fix")
+            .current_dir(&openclaw_dir)
+            .env("PATH", &new_path)
+            .env("OPENCLAW_NO_RESPAWN", "1")
+            .env("OPENCLAW_CONFIG_PATH", openclaw_dir.join("openclaw.json"))
+            .env("OPENCLAW_STATE_DIR", openclaw_dir.join("state"))
+            .output()
+    })
+    .await;
+    match result {
+        Ok(Ok(out)) => {
+            if out.status.success() {
+                tracing::info!(
+                    "openclaw-cn doctor --fix 完成（飞书/微信 plugin 已启用）"
+                );
+                // 默认放开飞书 DM（dmPolicy 默认是 pairing，仅接受 device_code 授权用户，
+                // 实际场景中用户会拿不同账号发消息，会被静默拒收）。
+                // 设成 "open" 后任意飞书用户发的 DM 都会被接收。
+                force_set_feishu_dm_policy_open(data_dir);
+            } else {
+                tracing::warn!(
+                    "openclaw-cn doctor --fix 退出码 {:?}：{}",
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stderr).chars().take(400).collect::<String>()
+                );
+            }
+        }
+        Ok(Err(e)) => tracing::warn!("doctor --fix 无法启动: {}", e),
+        Err(e) => tracing::warn!("doctor --fix 任务失败: {}", e),
+    }
+}
+
+/// 把飞书 channel 的 dmPolicy 强制设为 "open"（接受所有飞书用户的 DM）。
+///
+/// 背景：openclaw-cn 的 dmPolicy 默认是 "pairing"（只接受 device_code 授权过的用户）。
+/// 实际场景中用户会拿不同账号发消息，会被静默拒收（log 显示 "Blocked feishu DM"）。
+/// 我们走 doctor --fix 后强制改 open，让任意飞书用户消息都能被 agent 处理。
+fn force_set_feishu_dm_policy_open(data_dir: &str) {
+    let oc_path = std::path::PathBuf::from(data_dir)
+        .join("openclaw-cn")
+        .join("openclaw.json");
+    let raw = match std::fs::read_to_string(&oc_path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("force_set_feishu_dm_policy_open: 读 {} 失败: {}", oc_path.display(), e);
+            return;
+        }
+    };
+    let mut v: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("force_set_feishu_dm_policy_open: 解析 JSON 失败: {}", e);
+            return;
+        }
+    };
+    let mut changed = false;
+    // 顶层 channels.feishu
+    if let Some(fs) = v
+        .get_mut("channels")
+        .and_then(|c| c.get_mut("feishu"))
+        .and_then(|f| f.as_object_mut())
+    {
+        if fs.get("dmPolicy").and_then(|v| v.as_str()) != Some("open") {
+            fs.insert("dmPolicy".to_string(), serde_json::json!("open"));
+            changed = true;
+        }
+    }
+    // 每个 account 也设（单账号插件主要看这里）
+    if let Some(accounts) = v
+        .get_mut("channels")
+        .and_then(|c| c.get_mut("feishu"))
+        .and_then(|f| f.get_mut("accounts"))
+        .and_then(|a| a.as_object_mut())
+    {
+        for (_acc_id, acc) in accounts.iter_mut() {
+            if let Some(o) = acc.as_object_mut() {
+                if o.get("dmPolicy").and_then(|v| v.as_str()) != Some("open") {
+                    o.insert("dmPolicy".to_string(), serde_json::json!("open"));
+                    changed = true;
+                }
+            }
+        }
+    }
+    if changed {
+        match std::fs::write(
+            &oc_path,
+            serde_json::to_string_pretty(&v).unwrap_or_default(),
+        ) {
+            Ok(()) => tracing::info!("已强制设飞书 dmPolicy=open（接受所有飞书用户 DM）"),
+            Err(e) => tracing::warn!("写 openclaw.json 失败: {}", e),
+        }
+    }
 }

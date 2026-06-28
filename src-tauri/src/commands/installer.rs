@@ -5,7 +5,8 @@ use crate::bundled_env::{
 };
 use crate::commands::hidden_cmd;
 use crate::env_paths::{
-    build_deps_env_path, env_root, git_exe, git_exists, node_exe, resolve_node, unzip,
+    build_deps_env_path, env_root, git_exe, git_exists, node_exe, resolve_node, tar_gz_extract,
+    unzip,
 };
 #[cfg(target_os = "macos")]
 use crate::mirror::github_mirror_urls;
@@ -2148,8 +2149,15 @@ pub async fn install_openclaw(
         let use_pnpm = pnpm_path.is_some();
 
         let mut args = vec!["install".to_string()];
-        if !use_pnpm && cfg_legacy_peer {
-            args.push("--legacy-peer-deps".to_string());
+        // npm 默认加 --legacy-peer-deps：openclaw-cn 的 oxlint 生态有 peer-dep 冲突（oxlint-tsgolint），
+        // 不加会 ERESOLVE。pnpm 自动忽略 peer 冲突，因此只对 npm 生效。
+        // cfg_legacy_peer 为保留的用户可配置开关（true 时才加 force，覆盖默认行为）。
+        if !use_pnpm {
+            if cfg_legacy_peer {
+                args.push("--force".to_string());
+            } else {
+                args.push("--legacy-peer-deps".to_string());
+            }
         }
         if !cfg_allow_scripts {
             args.push("--ignore-scripts".to_string());
@@ -2359,7 +2367,89 @@ pub async fn install_openclaw(
     }
 
     info!("OpenClaw-CN 安装完成");
+
+    // 清理可能冲突的全局 launchd 服务：之前用户机器上如果 `npm install -g @dragonforce2010/openclaw-cn`
+    // 注册过 com.clawdbot.gateway，会与本 app 启动的本地 gateway 抢同一端口 18789，并持续刷 "Missing config"
+    // 错误。这里 bootout 掉它（找不到也无所谓，返回码非 0 仅打 warn）。
+    cleanup_stale_clawdbot_launchd_service();
+
     Ok(progress)
+}
+
+/// 卸载可能与本 app 冲突的全局 launchd 服务 `com.clawdbot.gateway`（来自
+/// `npm install -g @dragonforce2010/openclaw-cn`）。该服务会反复重启并占用 18789 端口，
+/// 造成本 app 启动的本地 gateway 启动后立即被 launchd 拉起的旧实例抢端口 + 持续刷 "Missing config" 日志。
+pub fn cleanup_stale_clawdbot_launchd_service() {
+    use std::process::Command;
+    // 仅在 macOS 上有意义（launchd 是 macOS 专属）
+    #[cfg(target_os = "macos")]
+    {
+        // 先查询是否存在；存在再 bootout，避免无谓的 stderr 输出
+        let listed = Command::new("launchctl")
+            .args(["list"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.contains("com.clawdbot.gateway"))
+            .unwrap_or(false);
+
+        if !listed {
+            return;
+        }
+
+        match Command::new("launchctl")
+            .args(["bootout", "gui/501/com.clawdbot.gateway"])
+            .output()
+        {
+            Ok(o) if o.status.success() => {
+                info!("已卸载冲突的全局 launchd 服务 com.clawdbot.gateway（来自旧版 npm install -g）");
+            }
+            Ok(o) => {
+                warn!(
+                    "bootout com.clawdbot.gateway 失败（exit={:?}）：{}",
+                    o.status.code(),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+            Err(e) => {
+                warn!("无法调用 launchctl bootout：{}", e);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = Command::new("true");
+    }
+}
+
+/// 通知 OS reap 任何 zombie 子进程，避免 openclaw-cn 的 lock 库误把僵尸当成"活进程"卡住新启动。
+///
+/// 背景：openclaw-cn 的 gateway-lock 用 `process.kill(pid, 0)` 判断 PID 是否存活。
+/// 在 macOS / Linux 上，**僵尸进程**（stat = Z）会响应 `kill 0` 返回成功 → 旧 lock 永远不释放。
+/// 父进程（本 app）只要有未 reap 的 zombie 残留，后续 start_gateway 都会
+/// 报 "gateway already running (pid XXXX); lock timeout after 5000ms"。
+///
+/// 修复：发 SIGCHLD 给所有有 zombie 子进程的 PPID，触发其立即 reap。
+/// 仅 Unix 有效；Windows 上无 zombie 概念。
+pub fn reap_zombie_children() {
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+        // ps 输出格式：PID STAT（默认带终端宽度时可能含多列，我们只关心前两列）
+        // 找一个子进程 ID 仍在僵尸态的 PPID，对它发 SIGCHLD。
+        // 用 sh 做 shell 解析最简单（避免依赖 regex crate）。
+        let _ = Command::new("sh")
+            .args([
+                "-c",
+                "ps -A -o pid=,stat= 2>/dev/null | awk '$2 ~ /^Z/ { print $1 }' | while read zpid; do \
+                 # 找 zombie 的父进程 PPID 并发 SIGCHLD 触发 reap
+                 ppid=$(ps -o ppid= -p $zpid 2>/dev/null | tr -d ' '); \
+                 [ -n \"$ppid\" ] && kill -s SIGCHLD $ppid 2>/dev/null && true; \
+                 done; true"
+            ])
+            .output();
+        info!("已尝试 reap zombie 子进程（SIGCHLD → PPID）");
+    }
 }
 
 // ─── Post-install patches for broken modules in openclaw-cn npm package ───────────

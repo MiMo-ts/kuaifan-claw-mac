@@ -72,20 +72,23 @@ export default function HomePage() {
     }
   };
 
-  // Poll gateway status
+  // Poll gateway status (always run, even when busy)
   useEffect(() => {
     if (!hydrated) return;
     const poll = async () => {
-      if (gatewayBusy) return;
       try {
         const status = await invoke<GatewayStatus>("get_gateway_status");
         setGatewayStatus(status);
         setGatewayRunning(status.running);
       } catch { /* ignore */ }
     };
-    const id = window.setInterval(poll, 5000);
+    // Faster polling when busy (every 1s), normal when idle (every 5s)
+    const interval = gatewayBusy ? 1000 : 5000;
+    const id = window.setInterval(poll, interval);
     const onVis = () => { if (document.visibilityState === "visible") void poll(); };
     document.addEventListener("visibilitychange", onVis);
+    // Immediate poll on busy state change
+    if (gatewayBusy) void poll();
     return () => { window.clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
   }, [hydrated, gatewayBusy, setGatewayRunning]);
 
@@ -124,13 +127,21 @@ export default function HomePage() {
       if (isRunning) {
         await invoke("stop_gateway");
         setGatewayRunning(false);
+        setGatewayStatus(null);
         toast.success("网关已停止", { id: toastId });
       } else {
         await invoke("start_gateway");
-        setGatewayRunning(true);
         toast.success("网关已启动", { id: toastId });
-        const status = await invoke<GatewayStatus>("get_gateway_status");
-        setGatewayStatus(status);
+        // Poll multiple times to ensure status is accurate
+        for (let i = 0; i < 3; i++) {
+          await new Promise(r => setTimeout(r, 500));
+          try {
+            const status = await invoke<GatewayStatus>("get_gateway_status");
+            setGatewayStatus(status);
+            setGatewayRunning(status.running);
+            if (status.running) break;
+          } catch { /* ignore */ }
+        }
       }
     } catch (e) {
       toast.error(`操作失败: ${e instanceof Error ? e.message : String(e)}`, { id: toastId });

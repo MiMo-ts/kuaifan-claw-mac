@@ -160,10 +160,10 @@ fn ensure_writable_release_data_dir(exe_path: &std::path::Path) -> PathBuf {
 /// 
 /// 
 ///
-/// 
-/// 
+///
+///
 fn resolve_release_data_dir(exe_path: &std::path::Path) -> std::path::PathBuf {
-    // 
+    // 1. 最高优先：环境变量强制指定
     if let Ok(ev) = std::env::var("OPENCLAW_CN_DATA_DIR") {
         let t = ev.trim();
         if !t.is_empty() {
@@ -173,42 +173,56 @@ fn resolve_release_data_dir(exe_path: &std::path::Path) -> std::path::PathBuf {
 
     let exe_dir = exe_path.parent().unwrap_or(exe_path);
 
-    // 
-    // 
+    // 2. macOS 特殊处理：使用 ~/Library/Application Support 标准位置
+    //    这样 .app 替换/重新编译时数据不会丢失。
+    //    若旧版 .app/data/ 存在且新位置尚未初始化，自动迁移一次。
     #[cfg(target_os = "macos")]
     {
         let exe_str = exe_path.to_string_lossy();
         if exe_str.contains(".app/Contents/MacOS/") {
-            // 
-            if let Some(app_bundle_pos) = exe_str.find(".app/") {
-                let app_bundle_path = &exe_str[..app_bundle_pos + 5]; // contains .app
-                let bundle_data_dir = PathBuf::from(app_bundle_path).join("data");
-                let bundle_config_dir = bundle_data_dir.join("config");
-                // 
-                if bundle_config_dir.exists() {
-                    return bundle_data_dir;
+            // 标准 Mac 数据目录
+            let standard_data_dir = fallback_user_data_dir();
+            let standard_config = standard_data_dir.join("config");
+            let _ = std::fs::create_dir_all(&standard_data_dir);
+
+            // 一次性迁移：旧 .app/data/ → ~/Library/Application Support/...
+            if !standard_config.exists() {
+                if let Some(app_bundle_pos) = exe_str.find(".app/") {
+                    let app_bundle_path = &exe_str[..app_bundle_pos + 5];
+                    let old_bundle_data = PathBuf::from(app_bundle_path).join("data");
+                    let old_bundle_config = old_bundle_data.join("config");
+                    if old_bundle_config.exists() {
+                        tracing::info!(
+                            "Migrating legacy .app data: {} -> {}",
+                            old_bundle_data.display(),
+                            standard_data_dir.display()
+                        );
+                        if let Err(e) = copy_dir_recursive(&old_bundle_data, &standard_data_dir) {
+                            tracing::warn!("Legacy data migration failed: {}", e);
+                        }
+                    }
                 }
-                // 
-                return bundle_data_dir;
+            }
+
+            if standard_config.exists() {
+                return standard_data_dir;
             }
         }
     }
 
+    // 3. 便携模式：exe 同目录的 data/
     let portable_data_dir = exe_dir.join("data");
     let portable_config_dir = portable_data_dir.join("config");
-    // 
     if portable_config_dir.exists() {
         return portable_data_dir;
     }
-    // 
     let portable_flag = exe_dir.join("OpenClaw-CN.portable");
     if portable_flag.exists() {
         return portable_data_dir;
     }
-    // 
-    // 
-    // 
-    portable_data_dir
+
+    // 4. 兜底：使用系统标准目录
+    fallback_user_data_dir()
 }
 
 /// 
@@ -307,11 +321,11 @@ fn msi_bootstrap(exe_path: &std::path::Path) {
 /// - Windows/Linux: {exe_dir}/resources/
 /// - macOS app bundle: {app_bundle}/Contents/Resources/
 fn resolve_resource_dir(exe_path: &std::path::Path) -> Option<PathBuf> {
-    let _exe_str = exe_path.to_string_lossy();
+    let exe_str = exe_path.to_string_lossy();
 
     #[cfg(target_os = "macos")]
     {
-        // 
+        //
         if exe_str.contains(".app/Contents/MacOS/") {
             if let Some(app_bundle_pos) = exe_str.find(".app/") {
                 let app_bundle_path = &exe_str[..app_bundle_pos + 5];
@@ -337,10 +351,12 @@ fn resolve_resource_dir(exe_path: &std::path::Path) -> Option<PathBuf> {
 /// 
 fn migrate_resources_on_first_run(data_dir_abs: &PathBuf, exe_path: &PathBuf) {
     if !cfg!(debug_assertions) {
-        // 
-
-        // 
-        let resource_dir = resolve_resource_dir(exe_path).map(|p| p.join("data"));
+        // 资源目录在 Tauri 2 打包后位于：
+        //   Windows/Linux: {exe_dir}/resources/resources/data/
+        //   macOS app bundle: {app_bundle}/Contents/Resources/resources/data/
+        // 原因：tauri.conf.json 中 `bundle.resources` 列出的 `resources/data` 等条目
+        //      会被 Tauri 保留 `resources/` 前缀放进 bundle 资源根。
+        let resource_dir = resolve_resource_dir(exe_path).map(|p| p.join("resources").join("data"));
 
         if let Some(resource_dir) = resource_dir {
             let migrated_marker = data_dir_abs.join(".migrated");
@@ -371,7 +387,19 @@ fn migrate_resources_on_first_run(data_dir_abs: &PathBuf, exe_path: &PathBuf) {
                         tracing::warn!("Failed to write migration marker: {}", e);
                     }
                 }
+            } else if current_version == expected_version {
+                tracing::info!(
+                    "Data migration already completed (v{}); skipping",
+                    current_version
+                );
+            } else {
+                tracing::info!(
+                    "Resource dir not found at {}; skipping migration",
+                    resource_dir.display()
+                );
             }
+        } else {
+            tracing::warn!("resolve_resource_dir returned None; skipping migration");
         }
     }
 }
