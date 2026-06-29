@@ -1,4 +1,4 @@
-﻿// 系统命令
+// 系统命令
 
 use crate::commands::hidden_cmd;
 use crate::models::SystemInfo;
@@ -232,7 +232,7 @@ pub async fn get_system_info() -> Result<SystemInfo, String> {
 
 #[tauri::command]
 pub async fn fetch_versions() -> Result<String, String> {
-    let url = "http://kuaifanclaw.cn/api/public/packages";
+    let url = "https://kuaifanclaw.cn/api/public/packages";
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()

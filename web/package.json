@@ -1,6 +1,6 @@
 {
   "name": "openclaw-cn-manager",
-  "version": "1.0.24",
+  "version": "1.0.0",
   "description": "OpenClaw-CN Manager - 一站式安装与管理系统",
   "type": "module",
   "scripts": {

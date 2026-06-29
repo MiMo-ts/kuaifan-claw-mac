@@ -1,4 +1,4 @@
-﻿// 插件管理命令
+// 插件管理命令
 
 use crate::bundled_env::resolve_bundled_plugin_tgz;
 use crate::commands::hidden_cmd;
@@ -19,7 +19,7 @@ fn validate_registry_url(url: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+    if !trimmed.starts_with("https://") {
         return None;
     }
     // 去掉末尾斜杠后返回（保持与 push() 去斜杠逻辑一致）
@@ -115,6 +115,23 @@ fn looks_like_exact_npm_version(ver: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// Validate npm spec string for shell safety (prevent command injection).
+/// Only allows: alphanumeric, @, /, -, _, ., ~, ^, >=, <=, >, <, whitespace, *, |
+fn validate_npm_spec(spec: &str) -> Result<(), String> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return Err("npm spec 不能为空".to_string());
+    }
+    // Reject shell metacharacters
+    let forbidden = [';', '&', '`', '$', '(', ')', '{', '}', '<', '>', '!', '\n', '\r', '"', '\''];
+    for ch in trimmed.chars() {
+        if forbidden.contains(&ch) {
+            return Err(format!("npm spec 包含非法字符: '{}'", ch));
+        }
+    }
+    Ok(())
 }
 
 /// 写入前净化：去掉自依赖、把 `@openclaw-cn/*` 的过时精确版放宽为 `*`，避免国内镜像缺包导致整次 install 失败。
@@ -818,6 +835,10 @@ fn install_plugin_deps_blocking(
 
     // 优先：若 manifest 声明了特定 npm 包（如 QQ 的 @sliverp/qqbot），直接安装它
     if let Some(ref npm_spec) = npm_spec_opt {
+        // Validate npm spec for shell safety
+        if let Err(e) = validate_npm_spec(npm_spec) {
+            return Err(format!("插件 {} npm spec 校验失败: {}", plugin_id, e));
+        }
         tracing::info!(
             "插件 {} manifest 声明 npmSpec={}，执行定向安装",
             plugin_id,
@@ -2254,6 +2275,11 @@ pub async fn uninstall_plugin(
     plugin_id: String,
 ) -> Result<String, String> {
     info!("卸载插件: {}", plugin_id);
+
+    // Validate plugin_id against path traversal
+    if plugin_id.contains("..") || plugin_id.contains('/') || plugin_id.contains('\\') {
+        return Err("非法的插件ID".to_string());
+    }
 
     let data_dir = data_dir.inner().get_data_dir();
     let plugin_path = format!("{}/plugins/{}", data_dir, plugin_id);

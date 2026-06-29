@@ -1,7 +1,7 @@
 // 快泛claw 官网版本 API 配置
 import { invoke } from '@tauri-apps/api/core';
 
-const KUAFAN_API = 'http://kuaifanclaw.cn';
+const KUAFAN_API = 'https://kuaifanclaw.cn';
 
 export interface ReleaseInfo {
   tag_name: string;

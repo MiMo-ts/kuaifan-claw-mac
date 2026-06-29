@@ -1,9 +1,13 @@
 {
-  "notes": "快泛claw v1.0.51 发布",
-  "version": "1.0.51",
+  "notes": "快泛claw v1.0.0 发布",
+  "version": "1.0.0",
   "platforms": {
     "windows-x86_64": {
-      "url": "http://kuaifanclaw.cn/download/claw_1.0.51_x64-setup.exe",
+      "url": "https://kuaifanclaw.cn/download/claw_1.0.0_x64-setup.exe",
+      "signature": ""
+    },
+    "macos-x86_64": {
+      "url": "https://kuaifanclaw.cn/download/claw_1.0.0_x64.dmg",
       "signature": ""
     }
   }

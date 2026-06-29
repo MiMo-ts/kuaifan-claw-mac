@@ -1,6 +1,6 @@
 [package]
 name = "快泛claw"
-version = "1.0.52"
+version = "1.0.0"
 description = "快泛claw - 一站式安装与管理系统"
 authors = ["快泛科技"]
 edition = "2021"

@@ -3125,20 +3125,114 @@ export const listProviderOnboardingAdapters = listChannelOnboardingAdapters;
     // 2.5. 创建 plugin-sdk 子路径模块（微信/企微插件需要）
     let sdk_dir = format!("{}/dist/plugin-sdk", openclaw_dir);
     let subpath_modules = [
-        ("channel-config-schema.js", "export { buildChannelConfigSchema } from \"../../channels/plugins/config-schema.js\";\n"),
-        ("runtime-store.js", "export function createPluginRuntimeStore() { return { get: () => null, set: () => {}, delete: () => {} }; }\n"),
+        ("account-id.js", "export { DEFAULT_ACCOUNT_ID, normalizeAccountId } from \"../routing/session-key.js\";\n"),
+        ("channel-config-schema.js", "export { buildChannelConfigSchema } from \"../channels/plugins/config-schema.js\";\n"),
+        ("channel-contract.js", "export {};\n"),
+        ("channel-policy.js", "export function buildAccountScopedDmSecurityPolicy(params) {\n  const DEFAULT_ACCOUNT = \"default\";\n  const resolvedAccountId = params.accountId ?? params.fallbackAccountId ?? DEFAULT_ACCOUNT;\n  const channelConfig = params.cfg?.channels?.[params.channelKey];\n  const useAccountPath = Boolean(channelConfig?.accounts?.[resolvedAccountId]);\n  const basePath = useAccountPath ? `channels.${params.channelKey}.accounts.${resolvedAccountId}.` : `channels.${params.channelKey}.`;\n  const allowFromPath = `${basePath}${params.allowFromPathSuffix ?? \"\"}`;\n  const policyPath = params.policyPathSuffix != null ? `${basePath}${params.policyPathSuffix}` : undefined;\n  return { policy: params.policy ?? params.defaultPolicy ?? \"pairing\", allowFrom: params.allowFrom ?? [], policyPath, allowFromPath, approveHint: params.approveHint ?? `Approve via: openclaw pairing approve ${params.channelKey} <code>`, normalizeEntry: params.normalizeEntry };\n}\n"),
+        ("channel-runtime.js", "export { createTypingCallbacks } from \"../channels/typing.js\";\n"),
+        ("command-auth.js", "export function resolveSenderCommandAuthorizationWithRuntime(ctx) { return { authorized: true }; }\nexport function resolveDirectDmAuthorizationOutcome(ctx) { return { authorized: true }; }\n"),
+        ("config-runtime.js", "export {};\n"),
+        ("core.js", "export { DEFAULT_ACCOUNT_ID, normalizeAccountId } from \"../routing/session-key.js\";\nexport { SILENT_REPLY_TOKEN, isSilentReplyText } from \"../auto-reply/tokens.js\";\nexport { createTypingCallbacks } from \"../channels/typing.js\";\nexport { logAckFailure, logInboundDrop, logTypingFailure } from \"../channels/logging.js\";\nexport { emitDiagnosticEvent, isDiagnosticsEnabled, onDiagnosticEvent } from \"../infra/diagnostic-events.js\";\nexport function emptyPluginConfigSchema() { return { type: 'object', additionalProperties: false, properties: {} }; }\n"),
+        ("infra-runtime.js", "import os from \"node:os\";\nimport path from \"node:path\";\nexport function resolvePreferredOpenClawTmpDir() { return path.join(os.tmpdir(), \"openclaw\"); }\nexport async function withFileLock(filePath, fn) { return fn(); }\n"),
         ("plugin-entry.js", "export {};\n"),
-        ("package.json", "{\n  \"name\": \"openclaw-plugin-sdk\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./channel-config-schema\": \"./channel-config-schema.js\",\n    \"./runtime-store\": \"./runtime-store.js\",\n    \"./plugin-entry\": \"./plugin-entry.js\"\n  }\n}\n"),
+        ("reply-runtime.js", "export {};\n"),
+        ("runtime-env.js", "export {};\n"),
+        ("runtime-store.js", "export function createPluginRuntimeStore(errorMessage) {\n  let _runtime = null;\n  return {\n    setRuntime(r) { _runtime = r; },\n    getRuntime() {\n      if (!_runtime) throw new Error(errorMessage || 'Runtime not initialized');\n      return _runtime;\n    },\n  };\n}\n"),
+        ("setup.js", "export {};\n"),
+        ("package.json", "{\n  \"name\": \"openclaw-plugin-sdk\",\n  \"type\": \"module\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./account-id\": \"./account-id.js\",\n    \"./channel-config-schema\": \"./channel-config-schema.js\",\n    \"./channel-contract\": \"./channel-contract.js\",\n    \"./channel-policy\": \"./channel-policy.js\",\n    \"./channel-runtime\": \"./channel-runtime.js\",\n    \"./command-auth\": \"./command-auth.js\",\n    \"./config-runtime\": \"./config-runtime.js\",\n    \"./core\": \"./core.js\",\n    \"./infra-runtime\": \"./infra-runtime.js\",\n    \"./plugin-entry\": \"./plugin-entry.js\",\n    \"./reply-runtime\": \"./reply-runtime.js\",\n    \"./runtime-env\": \"./runtime-env.js\",\n    \"./runtime-store\": \"./runtime-store.js\",\n    \"./setup\": \"./setup.js\"\n  }\n}\n"),
     ];
     for (filename, content) in subpath_modules {
         let path = format!("{}/{}", sdk_dir, filename);
-        if !Path::new(&path).exists() {
-            tokio::fs::write(&path, content)
-                .await
-                .map_err(|e| format!("创建 {} 失败: {}", filename, e))?;
-        }
+        // 总是覆盖，确保内容正确
+        tokio::fs::write(&path, content)
+            .await
+            .map_err(|e| format!("创建 {} 失败: {}", filename, e))?;
     }
     info!("Ensured plugin-sdk subpath modules exist");
+
+    // 2.6. 修复根 package.json：name 改为 "openclaw"，exports 子路径在通配符之前
+    let root_pkg_path = format!("{}/package.json", openclaw_dir);
+    if let Ok(content) = tokio::fs::read_to_string(&root_pkg_path).await {
+        if let Ok(mut pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+            // 修复 package name：插件 import 路径是 "openclaw/..."，必须匹配
+            if pkg.get("name").and_then(|n| n.as_str()) != Some("openclaw") {
+                pkg["name"] = serde_json::json!("openclaw");
+            }
+            // 重建 exports，确保子路径在通配符之前（Node.js 按顺序匹配）
+            let new_exports = serde_json::json!({
+                ".": "./dist/index.js",
+                "./plugin-sdk/channel-config-schema": "./dist/plugin-sdk/channel-config-schema.js",
+                "./plugin-sdk/runtime-store": "./dist/plugin-sdk/runtime-store.js",
+                "./plugin-sdk/plugin-entry": "./dist/plugin-sdk/plugin-entry.js",
+                "./plugin-sdk": "./dist/plugin-sdk/index.js",
+                "./plugin-sdk/*": "./dist/plugin-sdk/*"
+            });
+            pkg["exports"] = new_exports;
+            let pretty = serde_json::to_string_pretty(&pkg).unwrap_or_default();
+            tokio::fs::write(&root_pkg_path, &pretty)
+                .await
+                .map_err(|e| format!("修复 package.json 失败: {}", e))?;
+            info!("Patched package.json exports (subpath before wildcard)");
+        }
+    }
+
+    // 2.7. Patch plugins/loader.js — fix jiti alias for plugin-sdk subpath imports.
+    //    resolvePluginSdkAlias() returns ".../dist/plugin-sdk/index.js" (a file), but jiti's
+    //    alias does prefix replacement: "openclaw/plugin-sdk/channel-config-schema" becomes
+    //    "dist/plugin-sdk/index.js/channel-config-schema" (nonexistent). Fix: use the
+    //    directory path so subpath imports resolve correctly within the plugin-sdk dir.
+    let loader_path = format!("{}/dist/plugins/loader.js", openclaw_dir);
+    if let Ok(loader_content) = tokio::fs::read_to_string(&loader_path).await {
+        // Only patch if not already patched (avoid duplicate declarations)
+        let needs_patch = !loader_content.contains("pluginSdkDir")
+            && loader_content.contains("pluginSdkAlias");
+        if needs_patch {
+            let patched_loader = loader_content
+                .replace(
+                    "\"openclaw/plugin-sdk\": pluginSdkAlias,",
+                    "\"openclaw/plugin-sdk\": pluginSdkDir,",
+                )
+                .replace(
+                    "\"clawdbot/plugin-sdk\": pluginSdkAlias,",
+                    "\"clawdbot/plugin-sdk\": pluginSdkDir,",
+                )
+                .replace(
+                    "\"openclaw-cn/plugin-sdk\": pluginSdkAlias,",
+                    "\"openclaw-cn/plugin-sdk\": pluginSdkDir,",
+                )
+                .replace(
+                    "const pluginSdkAlias = resolvePluginSdkAlias();",
+                    "const pluginSdkAlias = resolvePluginSdkAlias();\n    const pluginSdkDir = pluginSdkAlias ? path.dirname(pluginSdkAlias) : null;",
+                );
+            if patched_loader != loader_content {
+                tokio::fs::write(&loader_path, &patched_loader)
+                    .await
+                    .map_err(|e| format!("写入 loader.js patch 失败: {}", e))?;
+                info!("Patched dist/plugins/loader.js (fixed jiti alias for plugin-sdk subpath imports)");
+            }
+        } else {
+            // Already patched — just ensure alias values use pluginSdkDir (not pluginSdkAlias)
+            let patched_loader = loader_content
+                .replace(
+                    "\"openclaw/plugin-sdk\": pluginSdkAlias,",
+                    "\"openclaw/plugin-sdk\": pluginSdkDir,",
+                )
+                .replace(
+                    "\"clawdbot/plugin-sdk\": pluginSdkAlias,",
+                    "\"clawdbot/plugin-sdk\": pluginSdkDir,",
+                )
+                .replace(
+                    "\"openclaw-cn/plugin-sdk\": pluginSdkAlias,",
+                    "\"openclaw-cn/plugin-sdk\": pluginSdkDir,",
+                );
+            if patched_loader != loader_content {
+                tokio::fs::write(&loader_path, &patched_loader)
+                    .await
+                    .map_err(|e| format!("写入 loader.js patch 失败: {}", e))?;
+                info!("Patched dist/plugins/loader.js (updated alias values)");
+            }
+        }
+    }
 
     // 3. Patch fs-paths.js — fix parseSandboxBindMount to handle Windows drive letters.
     //    Replace the whole function (marker: next export) — replacing only the opening
@@ -3508,6 +3602,32 @@ export function getShellConfig(command) {
     match patch_sessions_usage_all_agents(openclaw_dir).await {
         Ok(()) => info!("Patched dist/gateway/server-methods/usage.js (sessions.usage: discoverAllSessions 扫描全量 agent)"),
         Err(e) => warn!("sessions.usage 全 agent 发现补丁未应用: {}", e),
+    }
+
+    // Patch wechat plugin: withReplyDispatcher fallback for OpenClaw < 2026.3.22
+    // jiti loads .ts source directly, so patch the .ts file (not .js)
+    let wechat_ts_path = format!("{}/../plugins/wechat_clawbot/src/messaging/process-message.ts", openclaw_dir);
+    if let Ok(ts_content) = tokio::fs::read_to_string(&wechat_ts_path).await {
+        if ts_content.contains("withReplyDispatcher") && !ts_content.contains("typeof deps.channelRuntime.reply.withReplyDispatcher") {
+            let patched = ts_content.replace(
+                "await deps.channelRuntime.reply.withReplyDispatcher({\n      dispatcher,\n      run: () =>\n        deps.channelRuntime.reply.dispatchReplyFromConfig({\n          ctx: finalized,\n          cfg: deps.config,\n          dispatcher,\n          replyOptions: { ...replyOptions, disableBlockStreaming: true },\n        }),\n    });",
+                "const replyArgs = {\n      ctx: finalized,\n      cfg: deps.config,\n      dispatcher,\n      replyOptions: { ...replyOptions, disableBlockStreaming: true },\n    };\n    if (typeof deps.channelRuntime.reply.withReplyDispatcher === \"function\") {\n      await deps.channelRuntime.reply.withReplyDispatcher({\n        dispatcher,\n        run: () => deps.channelRuntime.reply.dispatchReplyFromConfig(replyArgs),\n      });\n    } else {\n      await deps.channelRuntime.reply.dispatchReplyFromConfig(replyArgs);\n    }",
+            );
+            if patched != ts_content {
+                tokio::fs::write(&wechat_ts_path, &patched).await.ok();
+                info!("Patched wechat process-message.ts (withReplyDispatcher fallback)");
+            }
+        }
+    }
+
+    // Ensure wechat plugin account index exists (required by listIndexedWeixinAccountIds)
+    let wechat_state_dir = format!("{}/../plugins/../openclaw-cn/state/openclaw-weixin", openclaw_dir);
+    let wechat_accounts_dir = format!("{}/accounts", wechat_state_dir);
+    let wechat_index_path = format!("{}/accounts.json", wechat_state_dir);
+    if !Path::new(&wechat_index_path).exists() {
+        let _ = tokio::fs::create_dir_all(&wechat_accounts_dir).await;
+        let _ = tokio::fs::write(&wechat_index_path, "[\"default\"]").await;
+        info!("Created wechat accounts.json index (default account)");
     }
 
     Ok(())

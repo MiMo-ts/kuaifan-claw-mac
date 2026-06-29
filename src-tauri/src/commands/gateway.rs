@@ -1681,15 +1681,14 @@ pub async fn sync_openclaw_config_from_manager(data_dir: &str) -> Result<(), Str
         }),
     );
 
-    // 禁用 openclaw-cn 内置的 /v1/chat/completions 端点（其 agentCommand 返回空内容）
-    // 改用 Rust 代理端点 /api/chat/completions
+    // 启用 HTTP /v1/chat/completions 端点
     merge_json_deep(
         &mut patch,
         json!({
             "gateway": {
                 "http": {
                     "endpoints": {
-                        "chatCompletions": { "enabled": false }
+                        "chatCompletions": { "enabled": true }
                     }
                 }
             }
