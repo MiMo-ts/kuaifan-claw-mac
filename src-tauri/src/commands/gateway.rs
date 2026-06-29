@@ -3373,7 +3373,7 @@ pub async fn proxy_gateway_chat(
         model.clone()
     };
 
-    let use_stream = stream.unwrap_or(false);
+    let use_stream = stream.unwrap_or(true);
     let body = serde_json::json!({
         "model": upstream_model,
         "messages": messages,

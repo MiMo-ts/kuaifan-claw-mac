@@ -1,4 +1,4 @@
-﻿// 模型管理命令
+// 模型管理命令
 
 
 
@@ -1881,7 +1881,7 @@ pub async fn test_model_connection(
 
                     "prompt": "Hello",
 
-                    "stream": false
+                    "stream": true
 
                 }))
 
