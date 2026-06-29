@@ -1,4 +1,4 @@
-﻿// 安装服务命令
+// 安装服务命令
 
 use crate::bundled_env::{
     resolve_bundled_openclaw_tarball, resolve_bundled_zip, resolve_bundled_zip_from_project,
@@ -3121,6 +3121,24 @@ export const listProviderOnboardingAdapters = listChannelOnboardingAdapters;
         .await
         .map_err(|e| format!("写入 plugin-sdk/index.js patch 失败: {}", e))?;
     info!("Patched dist/plugin-sdk/index.js (fixed feishu re-export paths)");
+
+    // 2.5. 创建 plugin-sdk 子路径模块（微信/企微插件需要）
+    let sdk_dir = format!("{}/dist/plugin-sdk", openclaw_dir);
+    let subpath_modules = [
+        ("channel-config-schema.js", "export { buildChannelConfigSchema } from \"../../channels/plugins/config-schema.js\";\n"),
+        ("runtime-store.js", "export function createPluginRuntimeStore() { return { get: () => null, set: () => {}, delete: () => {} }; }\n"),
+        ("plugin-entry.js", "export {};\n"),
+        ("package.json", "{\n  \"name\": \"openclaw-plugin-sdk\",\n  \"exports\": {\n    \".\": \"./index.js\",\n    \"./channel-config-schema\": \"./channel-config-schema.js\",\n    \"./runtime-store\": \"./runtime-store.js\",\n    \"./plugin-entry\": \"./plugin-entry.js\"\n  }\n}\n"),
+    ];
+    for (filename, content) in subpath_modules {
+        let path = format!("{}/{}", sdk_dir, filename);
+        if !Path::new(&path).exists() {
+            tokio::fs::write(&path, content)
+                .await
+                .map_err(|e| format!("创建 {} 失败: {}", filename, e))?;
+        }
+    }
+    info!("Ensured plugin-sdk subpath modules exist");
 
     // 3. Patch fs-paths.js — fix parseSandboxBindMount to handle Windows drive letters.
     //    Replace the whole function (marker: next export) — replacing only the opening

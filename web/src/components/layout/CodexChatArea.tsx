@@ -190,7 +190,7 @@ export default function CodexChatArea({
         port,
         model,
         messages: [{ role: 'user', content: userMsg }],
-        stream: false,
+        stream: true,
       });
       console.log('[chat] proxy_gateway_chat returned ' + (respText?.length || 0) + ' bytes');
 

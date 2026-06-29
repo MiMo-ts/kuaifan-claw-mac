@@ -1681,14 +1681,15 @@ pub async fn sync_openclaw_config_from_manager(data_dir: &str) -> Result<(), Str
         }),
     );
 
-    // 启用 HTTP /v1/chat/completions 端点（供管理端 Rust 代理调用）
+    // 禁用 openclaw-cn 内置的 /v1/chat/completions 端点（其 agentCommand 返回空内容）
+    // 改用 Rust 代理端点 /api/chat/completions
     merge_json_deep(
         &mut patch,
         json!({
             "gateway": {
                 "http": {
                     "endpoints": {
-                        "chatCompletions": { "enabled": true }
+                        "chatCompletions": { "enabled": false }
                     }
                 }
             }
@@ -3164,7 +3165,8 @@ fn spawn_gateway_process(
                 "OPENCLAW_GATEWAY_PORT",
                 resolve_gateway_http_port(data_dir).to_string(),
             )
-            .env("OPENCLAW_NO_RESPAWN", "1");
+            .env("OPENCLAW_NO_RESPAWN", "1")
+            .env("OPENCLAW_ALLOW_MULTI_GATEWAY", "1");
 
         if let (Some(provider), Some(key)) = (
             read_default_model_provider(data_dir),
@@ -3393,23 +3395,80 @@ pub async fn proxy_gateway_chat(
         builder = builder.header("Authorization", format!("Bearer {}", api_key));
     }
 
-    tracing::info!("proxy_gateway_chat: calling kuaifan API model={}", upstream_model);
+    tracing::info!("proxy_gateway_chat: calling kuaifan API model={} stream={}", upstream_model, use_stream);
     let resp = builder.send().await.map_err(|e| {
         tracing::error!("proxy_gateway_chat: request failed: {}", e);
         format!("请求失败: {}", e)
     })?;
     let status = resp.status();
-    let text = resp.text().await.map_err(|e| {
-        tracing::error!("proxy_gateway_chat: read response failed: {}", e);
-        format!("读取响应: {}", e)
-    })?;
 
-    tracing::info!("proxy_gateway_chat: HTTP {} body_len={}", status.as_u16(), text.len());
     if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
         tracing::error!("proxy_gateway_chat: error response: {}", &text[..text.len().min(300)]);
         return Err(format!("HTTP {}: {}", status.as_u16(), &text[..text.len().min(300)]));
     }
-    Ok(text)
+
+    if use_stream {
+        // 流式模式：读取 SSE 并拼接内容
+        let mut full_content = String::new();
+        let mut buffer = String::new();
+        let mut resp = resp;
+        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("读取流响应: {}", e))? {
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(line_end) = buffer.find('\n') {
+                let line = buffer[..line_end].trim().to_string();
+                buffer = buffer[line_end + 1..].to_string();
+                if line.starts_with("data: ") {
+                    let data = &line[6..];
+                    if data == "[DONE]" {
+                        break;
+                    }
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(delta) = json.get("choices")
+                            .and_then(|c| c.as_array())
+                            .and_then(|a| a.first())
+                            .and_then(|c| c.get("delta"))
+                        {
+                            if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                                full_content.push_str(content);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 构造非流式格式响应
+        let response = serde_json::json!({
+            "id": "chatcmpl-proxy",
+            "object": "chat.completion",
+            "created": chrono::Utc::now().timestamp(),
+            "model": upstream_model,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": full_content
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }
+        });
+        let text = serde_json::to_string(&response).unwrap_or_default();
+        tracing::info!("proxy_gateway_chat: stream assembled, content_len={}", full_content.len());
+        Ok(text)
+    } else {
+        // 非流式模式
+        let text = resp.text().await.map_err(|e| {
+            tracing::error!("proxy_gateway_chat: read response failed: {}", e);
+            format!("读取响应: {}", e)
+        })?;
+        tracing::info!("proxy_gateway_chat: HTTP {} body_len={}", status.as_u16(), text.len());
+        Ok(text)
+    }
 }
 
 // ============================================================
