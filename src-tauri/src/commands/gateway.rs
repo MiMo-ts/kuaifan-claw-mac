@@ -1705,40 +1705,7 @@ pub async fn sync_openclaw_config_from_manager(data_dir: &str) -> Result<(), Str
 
     normalize_plugin_entries_keys(&mut base);
 
-    // 为已安装的通道插件添加 entries（避免 "plugin not found" 错误）
-    {
-        let plugins_dir = PathBuf::from(data_dir).join("plugins");
-        if let Some(plugins_obj) = base
-            .as_object_mut()
-            .and_then(|b| b.get_mut("plugins"))
-            .and_then(|p| p.as_object_mut())
-        {
-            let entries = plugins_obj
-                .entry("entries".to_string())
-                .or_insert_with(|| json!({}));
-
-            if let Some(entries_obj) = entries.as_object_mut() {
-                // 检查各插件是否已安装（dist/index.js 存在）
-                let plugin_ids = [
-                    ("feishu", "feishu"),  // 内置，始终启用
-                    ("openclaw-weixin", "wechat_clawbot"),
-                    ("wecom-openclaw-plugin", "wecom"),
-                ];
-                for (plugin_id, dir_name) in plugin_ids {
-                    let plugin_dir = plugins_dir.join(dir_name);
-                    let dist_index = plugin_dir.join("dist").join("index.js");
-                    if plugin_id == "feishu" || dist_index.exists() {
-                        let entry = entries_obj
-                            .entry(plugin_id.to_string())
-                            .or_insert_with(|| json!({}));
-                        if let Some(obj) = entry.as_object_mut() {
-                            obj.insert("enabled".to_string(), json!(true));
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // plugins.entries 由网关自动管理，不手动写入
 
     // 避免从 custom 切回 loopback/lan 后仍残留 customBindHost
     if bind != json!("custom") {
