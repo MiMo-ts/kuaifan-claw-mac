@@ -1,4 +1,4 @@
-﻿// 环境检测命令
+// 环境检测命令
 
 use crate::commands::hidden_cmd;
 use crate::env_paths::{env_root, npm_exe, resolve_git, resolve_node};
@@ -186,7 +186,19 @@ pub async fn check_npm_version(
         for npm_path in &common_npm_paths {
             let path = Path::new(npm_path);
             if path.is_file() {
-                if let Ok(output) = Command::new(&path).arg("--version").output() {
+                let mut cmd = Command::new(&path);
+                cmd.arg("--version");
+                // npm 的 shebang 是 #!/usr/bin/env node，GUI 进程 PATH 不含 /usr/local/bin 等，
+                // 需要将 npm 所在目录加入 PATH 以便 node 被找到
+                if let Some(parent) = path.parent() {
+                    let parent_str = parent.to_string_lossy();
+                    let augmented = match std::env::var("PATH") {
+                        Ok(old) => format!("{}:{}", parent_str, old),
+                        Err(_) => parent_str.to_string(),
+                    };
+                    cmd.env("PATH", &augmented);
+                }
+                if let Ok(output) = cmd.output() {
                     if output.status.success() {
                         let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                         tracing::info!("check_npm_version 找到 npm: {} v{}", npm_path, version);
@@ -208,7 +220,17 @@ pub async fn check_npm_version(
                 for entry in entries.flatten() {
                     let npm_path = entry.path().join("bin").join("npm");
                     if npm_path.is_file() {
-                        if let Ok(output) = Command::new(&npm_path).arg("--version").output() {
+                        let mut cmd = Command::new(&npm_path);
+                        cmd.arg("--version");
+                        if let Some(parent) = npm_path.parent() {
+                            let parent_str = parent.to_string_lossy();
+                            let augmented = match std::env::var("PATH") {
+                                Ok(old) => format!("{}:{}", parent_str, old),
+                                Err(_) => parent_str.to_string(),
+                            };
+                            cmd.env("PATH", &augmented);
+                        }
+                        if let Ok(output) = cmd.output() {
                             if output.status.success() {
                                 let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                                 tracing::info!("check_npm_version 找到 nvm npm: {} v{}", npm_path.display(), version);
@@ -289,7 +311,17 @@ pub async fn check_pnpm_installation() -> Result<EnvItem, String> {
         for pnpm_path in &common_pnpm_paths {
             let path = Path::new(pnpm_path);
             if path.is_file() {
-                if let Ok(output) = Command::new(&path).arg("--version").output() {
+                let mut cmd = Command::new(&path);
+                cmd.arg("--version");
+                if let Some(parent) = path.parent() {
+                    let parent_str = parent.to_string_lossy();
+                    let augmented = match std::env::var("PATH") {
+                        Ok(old) => format!("{}:{}", parent_str, old),
+                        Err(_) => parent_str.to_string(),
+                    };
+                    cmd.env("PATH", &augmented);
+                }
+                if let Ok(output) = cmd.output() {
                     if output.status.success() {
                         let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                         tracing::info!("check_pnpm_installation 找到 pnpm: {} v{}", pnpm_path, version);
@@ -311,7 +343,17 @@ pub async fn check_pnpm_installation() -> Result<EnvItem, String> {
                 for entry in entries.flatten() {
                     let pnpm_path = entry.path().join("bin").join("pnpm");
                     if pnpm_path.is_file() {
-                        if let Ok(output) = Command::new(&pnpm_path).arg("--version").output() {
+                        let mut cmd = Command::new(&pnpm_path);
+                        cmd.arg("--version");
+                        if let Some(parent) = pnpm_path.parent() {
+                            let parent_str = parent.to_string_lossy();
+                            let augmented = match std::env::var("PATH") {
+                                Ok(old) => format!("{}:{}", parent_str, old),
+                                Err(_) => parent_str.to_string(),
+                            };
+                            cmd.env("PATH", &augmented);
+                        }
+                        if let Ok(output) = cmd.output() {
                             if output.status.success() {
                                 let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                                 tracing::info!("check_pnpm_installation 找到 nvm pnpm: {} v{}", pnpm_path.display(), version);
