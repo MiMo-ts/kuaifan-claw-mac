@@ -2527,9 +2527,14 @@ fn kill_unix_listeners_on_port(port: u16) {
     let _ = Command::new("sh").args(["-c", &script]).output();
 
     // 第二轮：pgrep 按命令名查找 node gateway 进程（覆盖 lsof 未检测到的情况）
+    // 匹配多种启动方式：node dist/entry.js gateway、openclaw-cn、clawdbot-gateway 等
     let script2 = "pids=$(pgrep -f 'node dist/entry(-hidden)?\\.js gateway' 2>/dev/null); \
                     if [ -n \"$pids\" ]; then \
                       for p in $pids; do kill -9 -$p 2>/dev/null || kill -9 $p 2>/dev/null; done; \
+                    fi; \
+                    pids2=$(pgrep -f 'clawdbot-gateway' 2>/dev/null); \
+                    if [ -n \"$pids2\" ]; then \
+                      for p in $pids2; do kill -9 -$p 2>/dev/null || kill -9 $p 2>/dev/null; done; \
                     fi; true";
     let _ = Command::new("sh").args(["-c", script2]).output();
 }
@@ -2689,10 +2694,14 @@ fn stop_gateway_processes_best_effort(data_dir: &str) {
     // 第四步：兜底 — 杀所有残留的 openclaw gateway node 进程
     #[cfg(not(windows))]
     {
+        // 匹配多种进程名：node dist/entry.js gateway（原始命令行）、
+        // openclaw-cn（process.title 设置的名称）、clawdbot-gateway（CLI 启动的网关）
         let _ = Command::new("sh")
             .args([
                 "-c",
-                "pkill -9 -f 'node dist/entry(-hidden)?\\.js gateway' 2>/dev/null; true",
+                "pkill -9 -f 'node dist/entry(-hidden)?\\.js gateway' 2>/dev/null; \
+                 pkill -9 -f 'openclaw-cn.*gateway' 2>/dev/null; \
+                 pkill -9 -f 'clawdbot-gateway' 2>/dev/null; true",
             ])
             .output();
     }
@@ -2957,13 +2966,26 @@ await import("./entry.js");
     }
 
     // 启动前清理残留进程，避免端口冲突
-    for round in 1..=3 {
+    for round in 1..=5 {
         info!("启动前：清理残留进程（第{}轮）", round);
         stop_gateway_processes_best_effort(data_dir);
-        tokio::time::sleep(Duration::from_millis(800)).await;
+
+        // 额外清理：杀掉所有 clawdbot-gateway 和僵尸 node 进程
+        #[cfg(not(windows))]
+        {
+            let _ = Command::new("sh").args([
+                "-c",
+                "pkill -9 -f 'clawdbot-gateway' 2>/dev/null; \
+                 pkill -9 -f 'node dist/entry.*gateway' 2>/dev/null; \
+                 pkill -9 -f 'openclaw-cn.*gateway' 2>/dev/null; true",
+            ]).output();
+        }
+
+        tokio::time::sleep(Duration::from_millis(1000)).await;
 
         let port_free = !is_port_listen(listen_port).await;
         if port_free {
+            info!("端口 {} 已释放，可以启动网关", listen_port);
             break;
         }
         tracing::warn!("端口 {} 仍被占用，进行第{}轮清理", listen_port, round);
