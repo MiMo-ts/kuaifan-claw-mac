@@ -3133,8 +3133,10 @@ export const listProviderOnboardingAdapters = listChannelOnboardingAdapters;
         ("command-auth.js", "export function resolveSenderCommandAuthorizationWithRuntime(ctx) { return { authorized: true }; }\nexport function resolveDirectDmAuthorizationOutcome(ctx) { return { authorized: true }; }\n"),
         ("config-runtime.js", "export {};\n"),
         ("core.js", "export { DEFAULT_ACCOUNT_ID, normalizeAccountId } from \"../routing/session-key.js\";\nexport { SILENT_REPLY_TOKEN, isSilentReplyText } from \"../auto-reply/tokens.js\";\nexport { createTypingCallbacks } from \"../channels/typing.js\";\nexport { logAckFailure, logInboundDrop, logTypingFailure } from \"../channels/logging.js\";\nexport { emitDiagnosticEvent, isDiagnosticsEnabled, onDiagnosticEvent } from \"../infra/diagnostic-events.js\";\nexport function emptyPluginConfigSchema() { return { type: 'object', additionalProperties: false, properties: {} }; }\n"),
+        ("hook-runtime.js", "export function fireAndForgetHook(promise, label) { promise.catch((err) => { if (label) console.error(label, err); }); }\nexport function buildCanonicalSentMessageHookContext(params) { return { ...params, hookType: 'message_sent' }; }\nexport function toPluginMessageContext(canonical) { return { channelId: canonical.channelId, accountId: canonical.accountId, conversationId: canonical.conversationId }; }\nexport function toPluginMessageSentEvent(canonical) { return { to: canonical.to, content: canonical.content, success: canonical.success, error: canonical.error, hookType: canonical.hookType, channelId: canonical.channelId }; }\n"),
         ("infra-runtime.js", "import os from \"node:os\";\nimport path from \"node:path\";\nexport function resolvePreferredOpenClawTmpDir() { return path.join(os.tmpdir(), \"openclaw\"); }\nexport async function withFileLock(filePath, fn) { return fn(); }\n"),
         ("plugin-entry.js", "export {};\n"),
+        ("plugin-runtime.js", "let _globalHookRunner = null;\nexport function getGlobalHookRunner() { return _globalHookRunner; }\nexport function setGlobalHookRunner(runner) { _globalHookRunner = runner; }\n"),
         ("reply-runtime.js", "export {};\n"),
         ("runtime-env.js", "export {};\n"),
         ("runtime-store.js", "export function createPluginRuntimeStore(errorMessage) {\n  let _runtime = null;\n  return {\n    setRuntime(r) { _runtime = r; },\n    getRuntime() {\n      if (!_runtime) throw new Error(errorMessage || 'Runtime not initialized');\n      return _runtime;\n    },\n  };\n}\n"),
@@ -3164,6 +3166,8 @@ export const listProviderOnboardingAdapters = listChannelOnboardingAdapters;
                 "./plugin-sdk/channel-config-schema": "./dist/plugin-sdk/channel-config-schema.js",
                 "./plugin-sdk/runtime-store": "./dist/plugin-sdk/runtime-store.js",
                 "./plugin-sdk/plugin-entry": "./dist/plugin-sdk/plugin-entry.js",
+                "./plugin-sdk/hook-runtime": "./dist/plugin-sdk/hook-runtime.js",
+                "./plugin-sdk/plugin-runtime": "./dist/plugin-sdk/plugin-runtime.js",
                 "./plugin-sdk": "./dist/plugin-sdk/index.js",
                 "./plugin-sdk/*": "./dist/plugin-sdk/*"
             });
