@@ -16,6 +16,7 @@ import {
 } from "../icons";
 import { invoke } from '@tauri-apps/api/core';
 import { useThreadStore, type ChatMessage } from '../../stores/threadStore';
+import { OpenClawGateway } from '../../services/openclawGateway';
 
 interface ModelOption { provider: string; providerName: string; model: string; modelName: string; }
 
@@ -131,7 +132,7 @@ export default function CodexChatArea({
   const [currentModel, setCurrentModel] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
-  const abortRef = useRef<AbortController | null>(null);
+  const abortRef = useRef<{ abort: () => void } | null>(null);
   const gatewayOnline = gatewayRunning;
 
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
@@ -182,37 +183,62 @@ export default function CodexChatArea({
 
   const doChat = async (tid: string, aId: string, userMsg: string) => {
     const port = gatewayPort || 18789;
-    const model = currentModel || 'kuaifan/MiniMax-M2.7';
+    let accumulated = '';
 
-    try {
-      console.log('[chat] invoking proxy_gateway_chat port=' + port + ' model=' + model);
-      const respText: string = await invoke('proxy_gateway_chat', {
-        port,
-        model,
-        messages: [{ role: 'user', content: userMsg }],
-        stream: true,
-      });
-      console.log('[chat] proxy_gateway_chat returned ' + (respText?.length || 0) + ' bytes');
+    const gw = new OpenClawGateway({
+      onEvent: (event, payload) => {
+        if (event !== 'chat') return;
+        const state = payload?.state;
+        let content = '';
+        if (typeof payload?.message === 'string') {
+          content = payload.message;
+        } else if (payload?.message?.content) {
+          content = typeof payload.message.content === 'string'
+            ? payload.message.content
+            : JSON.stringify(payload.message.content);
+        } else if (payload?.message) {
+          content = JSON.stringify(payload.message);
+        }
 
-      const data = JSON.parse(respText);
-      const content = data?.choices?.[0]?.message?.content
-        || data?.choices?.[0]?.delta?.content
-        || '(空)';
+        if (state === 'final' || state === 'finished') {
+          const finalContent = content || accumulated || '(空)';
+          if (mountedRef.current) {
+            storeUpdateMessage(tid, aId, { content: finalContent, status: 'done' });
+            const store = useThreadStore.getState();
+            const t = store.threads.find(x => x.id === tid);
+            if (t) store.updateThread(tid, { lastMessage: finalContent.slice(0, 80), ts: Date.now() });
+          }
+          gw.stop();
+        } else if (state === 'error') {
+          const errMsg = payload?.errorMessage ?? payload?.error ?? 'Agent error';
+          if (mountedRef.current) storeUpdateMessage(tid, aId, { content: `出错：${errMsg}`, status: 'error' });
+          gw.stop();
+        } else if (content) {
+          accumulated += content;
+          if (mountedRef.current) storeUpdateMessage(tid, aId, { content: accumulated, status: 'streaming' });
+        }
+      },
+      onConnected: async () => {
+        try {
+          await gw.sendChat({ sessionKey: `manager-${tid}`, message: userMsg });
+        } catch (e: any) {
+          console.error('[chat] sendChat error:', e);
+          if (mountedRef.current) storeUpdateMessage(tid, aId, { content: `出错：${e?.message || e}`, status: 'error' });
+          gw.stop();
+        }
+      },
+      onError: (err) => {
+        console.error('[chat] gateway error:', err);
+        if (mountedRef.current) storeUpdateMessage(tid, aId, { content: `网关连接失败：${err.message}`, status: 'error' });
+        if (mountedRef.current) setBusy(false);
+      },
+      onDisconnected: () => {
+        if (mountedRef.current) setBusy(false);
+      },
+    });
 
-      let finalContent = typeof content === 'string' ? content : '';
-
-      if (mountedRef.current) {
-        storeUpdateMessage(tid, aId, { content: finalContent, status: 'done' });
-        const store = useThreadStore.getState();
-        const t = store.threads.find(x => x.id === tid);
-        if (t) store.updateThread(tid, { lastMessage: finalContent.slice(0, 80), ts: Date.now() });
-      }
-    } catch (e: any) {
-      console.error('[chat] proxy_gateway_chat error:', e);
-      if (mountedRef.current) storeUpdateMessage(tid, aId, { content: `出错：${e?.message || e}`, status: 'error' });
-    } finally {
-      if (mountedRef.current) setBusy(false);
-    }
+    abortRef.current = { abort: () => gw.stop() };
+    await gw.start();
   };
 
   // Attachment handling
