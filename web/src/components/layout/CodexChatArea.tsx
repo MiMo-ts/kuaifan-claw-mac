@@ -181,7 +181,7 @@ export default function CodexChatArea({
     try { await invoke('set_default_model', { provider: opt.provider, modelName: opt.model }); } catch {}
   };
 
-  const doChat = async (tid: string, aId: string, userMsg: string) => {
+  const doChat = async (tid: string, aId: string, userMsg: string, attachmentBlocks?: Array<{ type: string; image_url?: { url: string }; source?: { type: string; data: string; media_type: string } }>) => {
     const port = gatewayPort || 18789;
     let accumulated = '';
 
@@ -220,7 +220,7 @@ export default function CodexChatArea({
       },
       onConnected: async () => {
         try {
-          await gw.sendChat({ sessionKey: `manager-${tid}`, message: userMsg });
+          await gw.sendChat({ sessionKey: `manager-${tid}`, message: userMsg, attachments: attachmentBlocks });
         } catch (e: any) {
           console.error('[chat] sendChat error:', e);
           if (mountedRef.current) storeUpdateMessage(tid, aId, { content: `出错：${e?.message || e}`, status: 'error' });
@@ -304,13 +304,25 @@ export default function CodexChatArea({
     if (t && t.title === '新对话') useThreadStore.getState().updateThread(tid, { title: text.slice(0, 30) || '附件消息' });
 
     let fullMessage = text;
+    const attachmentBlocks: Array<{ type: string; image_url?: { url: string }; source?: { type: string; data: string; media_type: string } }> = [];
     if (savedAttach.length > 0) {
-      const attachLines = savedAttach.map(a => a.type === 'image' ? `![${a.name}](${a.dataUrl})` : `[附件: ${a.name}]`);
-      fullMessage = text ? `${text}\n\n${attachLines.join('\n')}` : attachLines.join('\n');
+      for (const a of savedAttach) {
+        if (a.type === 'image' && a.dataUrl) {
+          attachmentBlocks.push({
+            type: 'image_url',
+            image_url: { url: a.dataUrl },
+          });
+        } else if (a.type === 'file' || a.type === 'video') {
+          attachmentBlocks.push({
+            type: 'image_url',
+            image_url: { url: `[附件: ${a.name}]` },
+          });
+        }
+      }
     }
 
     setBusy(true);
-    doChat(tid, aId, fullMessage);
+    doChat(tid, aId, fullMessage, attachmentBlocks.length > 0 ? attachmentBlocks : undefined);
   };
 
   // Abort

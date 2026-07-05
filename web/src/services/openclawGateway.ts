@@ -293,6 +293,7 @@ export class OpenClawGateway {
     thinking?: string | number;
     deliver?: boolean;
     timeoutMs?: number;
+    attachments?: Array<{ type: string; image_url?: { url: string }; source?: { type: string; data: string; media_type: string } }>;
   }): Promise<{ runId: string }> {
     await this.readyPromise;
     const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -303,6 +304,7 @@ export class OpenClawGateway {
       deliver: opts.deliver,
       timeoutMs: opts.timeoutMs,
       idempotencyKey: runId,
+      attachments: opts.attachments,
     });
     return { runId: result?.runId ?? runId };
   }
