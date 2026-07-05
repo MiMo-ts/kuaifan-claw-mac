@@ -185,7 +185,21 @@ export default function CodexChatArea({
     const port = gatewayPort || 18789;
     let accumulated = '';
 
+    // Read gateway token from openclaw.json
+    let gwToken = '';
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const { readTextFile } = await import('@tauri-apps/plugin-fs');
+      const { join } = await import('@tauri-apps/api/path');
+      const dataDir: string = await invoke('get_data_dir');
+      const cfgPath = await join(dataDir, 'openclaw-cn', 'openclaw.json');
+      const content = await readTextFile(cfgPath);
+      const cfg = JSON.parse(content);
+      gwToken = cfg?.gateway?.auth?.token || '';
+    } catch { /* ignore */ }
+
     const gw = new OpenClawGateway({
+      token: gwToken,
       onEvent: (event, payload) => {
         if (event !== 'chat') return;
         const state = payload?.state;
