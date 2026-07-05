@@ -12,6 +12,7 @@
     "tauri:build": "cd ../src-tauri && node ../web/node_modules/@tauri-apps/cli/tauri.js build"
   },
   "dependencies": {
+    "@noble/ed25519": "^3.1.0",
     "@tanstack/react-virtual": "^3.10.9",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "ansi-to-html": "^0.7.2",

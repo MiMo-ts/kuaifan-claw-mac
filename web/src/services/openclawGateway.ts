@@ -5,8 +5,10 @@
  * providing full agent capabilities (skills, tools, memory) instead of
  * raw model proxy.
  *
- * Includes ECDSA P-256 device identity for gateway authentication.
+ * Uses Ed25519 device identity for gateway authentication.
  */
+
+import * as ed from '@noble/ed25519';
 
 interface GatewayClientOpts {
   url?: string;
@@ -23,52 +25,64 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-// ── Device Identity (ECDSA P-256) ──
+// ── Device Identity (Ed25519) ──
 
-const DEVICE_STORAGE_KEY = 'clawdbot-gateway-device-id-v2';
+const DEVICE_STORAGE_KEY = 'clawdbot-device-identity-v1';
 
-function arrayBufferToBase64(buf: ArrayBuffer): string {
-  let binary = '';
-  const bytes = new Uint8Array(buf);
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
+function base64UrlEncode(buf: Uint8Array): string {
+  let t = '';
+  for (const b of buf) t += String.fromCharCode(b);
+  return btoa(t).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
-function spkiToPem(spkiDer: ArrayBuffer): string {
-  const b64 = arrayBufferToBase64(spkiDer);
-  const lines = b64.match(/.{1,64}/g)?.join('\n') ?? b64;
-  return `-----BEGIN PUBLIC KEY-----\n${lines}\n-----END PUBLIC KEY-----`;
+function base64UrlDecode(input: string): Uint8Array {
+  const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+  const s = atob(padded);
+  const bytes = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+  return bytes;
 }
 
-async function sha256Hex(data: ArrayBuffer): Promise<string> {
-  const hash = await crypto.subtle.digest('SHA-256', data);
+async function sha256Hex(data: Uint8Array): Promise<string> {
+  const hash = await crypto.subtle.digest('SHA-256', data.buffer as ArrayBuffer);
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+const ED25519_SPKI_PREFIX = new Uint8Array([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00]);
+
+function publicKeyRawFromSpki(spkiDer: Uint8Array): Uint8Array {
+  return spkiDer.slice(ED25519_SPKI_PREFIX.length);
+}
+
 async function loadOrCreateDeviceIdentity(): Promise<{
-  deviceId: string; publicKeyPem: string; privateKey: CryptoKey;
+  deviceId: string; publicKey: Uint8Array; privateKeyBytes: Uint8Array;
 }> {
   try {
     const stored = localStorage.getItem(DEVICE_STORAGE_KEY);
     if (stored) {
-      const { privateKeyJwk, publicKeySpkiB64, deviceId } = JSON.parse(stored);
-      const privateKey = await crypto.subtle.importKey('jwk', privateKeyJwk,
-        { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
-      const publicKeyPem = spkiToPem(Uint8Array.from(atob(publicKeySpkiB64), c => c.charCodeAt(0)).buffer);
-      return { deviceId, publicKeyPem, privateKey };
+      const { privateKey: privB64, publicKey: pubB64, deviceId } = JSON.parse(stored);
+      const privateKeyBytes = base64UrlDecode(privB64);
+      const publicKey = base64UrlDecode(pubB64);
+      const derivedId = await sha256Hex(publicKey);
+      if (derivedId === deviceId) {
+        return { deviceId, publicKey, privateKeyBytes };
+      }
     }
   } catch { /* regenerate */ }
 
-  const keyPair = await crypto.subtle.generateKey(
-    { name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
-  const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
-  const spkiDer = await crypto.subtle.exportKey('spki', keyPair.publicKey);
-  const deviceId = await sha256Hex(spkiDer);
-  const publicKeySpkiB64 = arrayBufferToBase64(spkiDer);
-  const publicKeyPem = spkiToPem(spkiDer);
+  const privateKeyBytes = ed.utils.randomSecretKey();
+  const publicKey = await ed.getPublicKeyAsync(privateKeyBytes);
+  const deviceId = await sha256Hex(publicKey);
 
-  localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify({ privateKeyJwk, publicKeySpkiB64, deviceId }));
-  return { deviceId, publicKeyPem, privateKey: keyPair.privateKey };
+  localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify({
+    version: 1,
+    deviceId,
+    publicKey: base64UrlEncode(publicKey),
+    privateKey: base64UrlEncode(privateKeyBytes),
+  }));
+
+  return { deviceId, publicKey, privateKeyBytes };
 }
 
 function buildSignaturePayload(params: {
@@ -82,16 +96,10 @@ function buildSignaturePayload(params: {
   ].join('|');
 }
 
-async function signPayload(privateKey: CryptoKey, payload: string): Promise<string> {
-  const sig = await crypto.subtle.sign(
-    { name: 'ECDSA', hash: { name: 'SHA-256' } },
-    privateKey,
-    new TextEncoder().encode(payload),
-  );
-  const bytes = new Uint8Array(sig);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+async function signPayload(privateKeyBytes: Uint8Array, payload: string): Promise<string> {
+  const msgBytes = new TextEncoder().encode(payload);
+  const sig = await ed.signAsync(msgBytes, privateKeyBytes);
+  return base64UrlEncode(sig);
 }
 
 // ── Gateway Client ──
@@ -201,7 +209,7 @@ export class OpenClawGateway {
   private async sendConnect() {
     const id = String(this.nextId++);
     const token = this.opts.token ?? '';
-    const clientId = 'kuaifan-claw-manager';
+    const clientId = 'clawdbot-control-ui';
     const clientMode = 'webchat';
     const role = 'operator';
     const scopes = ['operator.admin', 'operator.approvals', 'operator.pairing', 'operator.write'];
@@ -216,10 +224,10 @@ export class OpenClawGateway {
           role, scopes, signedAtMs, token,
           nonce: this.connectNonce ?? '',
         });
-        const signature = await signPayload(identity.privateKey, payload);
+        const signature = await signPayload(identity.privateKeyBytes, payload);
         device = {
           id: identity.deviceId,
-          publicKey: identity.publicKeyPem,
+          publicKey: base64UrlEncode(identity.publicKey),
           signature,
           signedAt: signedAtMs,
           nonce: this.connectNonce ?? undefined,
