@@ -146,6 +146,7 @@ export class OpenClawGateway {
       const { url, token } = await OpenClawGateway.resolveConnection();
       const finalUrl = this.opts.url ?? url;
       const finalToken = this.opts.token ?? token;
+      this.opts.token = finalToken;
 
       this.ws = new WebSocket(finalUrl);
 
