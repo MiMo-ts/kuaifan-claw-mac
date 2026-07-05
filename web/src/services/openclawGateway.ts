@@ -4,6 +4,8 @@
  * Connects to the OpenClaw gateway via WebSocket JSON-RPC protocol,
  * providing full agent capabilities (skills, tools, memory) instead of
  * raw model proxy.
+ *
+ * Includes ECDSA P-256 device identity for gateway authentication.
  */
 
 interface GatewayClientOpts {
@@ -21,13 +23,85 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+// ── Device Identity (ECDSA P-256) ──
+
+const DEVICE_STORAGE_KEY = 'clawdbot-gateway-device-id-v2';
+
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  let binary = '';
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function spkiToPem(spkiDer: ArrayBuffer): string {
+  const b64 = arrayBufferToBase64(spkiDer);
+  const lines = b64.match(/.{1,64}/g)?.join('\n') ?? b64;
+  return `-----BEGIN PUBLIC KEY-----\n${lines}\n-----END PUBLIC KEY-----`;
+}
+
+async function sha256Hex(data: ArrayBuffer): Promise<string> {
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function loadOrCreateDeviceIdentity(): Promise<{
+  deviceId: string; publicKeyPem: string; privateKey: CryptoKey;
+}> {
+  try {
+    const stored = localStorage.getItem(DEVICE_STORAGE_KEY);
+    if (stored) {
+      const { privateKeyJwk, publicKeySpkiB64, deviceId } = JSON.parse(stored);
+      const privateKey = await crypto.subtle.importKey('jwk', privateKeyJwk,
+        { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+      const publicKeyPem = spkiToPem(Uint8Array.from(atob(publicKeySpkiB64), c => c.charCodeAt(0)).buffer);
+      return { deviceId, publicKeyPem, privateKey };
+    }
+  } catch { /* regenerate */ }
+
+  const keyPair = await crypto.subtle.generateKey(
+    { name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const privateKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
+  const spkiDer = await crypto.subtle.exportKey('spki', keyPair.publicKey);
+  const deviceId = await sha256Hex(spkiDer);
+  const publicKeySpkiB64 = arrayBufferToBase64(spkiDer);
+  const publicKeyPem = spkiToPem(spkiDer);
+
+  localStorage.setItem(DEVICE_STORAGE_KEY, JSON.stringify({ privateKeyJwk, publicKeySpkiB64, deviceId }));
+  return { deviceId, publicKeyPem, privateKey: keyPair.privateKey };
+}
+
+function buildSignaturePayload(params: {
+  deviceId: string; clientId: string; clientMode: string;
+  role: string; scopes: string[]; signedAtMs: number; token: string; nonce: string;
+}): string {
+  return [
+    'v2', params.deviceId, params.clientId, params.clientMode,
+    params.role, params.scopes.join(','), String(params.signedAtMs),
+    params.token, params.nonce,
+  ].join('|');
+}
+
+async function signPayload(privateKey: CryptoKey, payload: string): Promise<string> {
+  const sig = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: { name: 'SHA-256' } },
+    privateKey,
+    new TextEncoder().encode(payload),
+  );
+  const bytes = new Uint8Array(sig);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// ── Gateway Client ──
+
 export class OpenClawGateway {
   private ws: WebSocket | null = null;
   private opts: GatewayClientOpts;
   private pending = new Map<string, PendingRequest>();
   private nextId = 1;
   private closed = false;
-  private hello: any = null;
   private resolveReady: (() => void) | null = null;
   private readyPromise: Promise<void>;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -59,7 +133,6 @@ export class OpenClawGateway {
 
   async start() {
     if (this.closed) return;
-    // Reset ready promise for new connection
     this.readyPromise = new Promise((resolve) => { this.resolveReady = resolve; });
     try {
       const { url, token } = await OpenClawGateway.resolveConnection();
@@ -67,20 +140,14 @@ export class OpenClawGateway {
       const finalToken = this.opts.token ?? token;
 
       this.ws = new WebSocket(finalUrl);
-      // Note: browser WebSocket doesn't support custom headers.
-      // Token is sent via the connect RPC auth field instead.
 
-      this.ws.onopen = () => {
-        // Wait for hello event from gateway
-      };
+      this.ws.onopen = () => {};
 
       this.ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data as string);
           this.handleMessage(msg);
-        } catch {
-          // ignore parse errors
-        }
+        } catch { /* ignore */ }
       };
 
       this.ws.onclose = (e) => {
@@ -107,7 +174,6 @@ export class OpenClawGateway {
   }
 
   private handleMessage(msg: any) {
-    // Gateway sends connect.challenge event first (not 'hello')
     if (msg.type === 'event' && msg.event === 'connect.challenge') {
       this.connectNonce = msg.payload?.nonce ?? null;
       this.sendConnect();
@@ -135,6 +201,32 @@ export class OpenClawGateway {
   private async sendConnect() {
     const id = String(this.nextId++);
     const token = this.opts.token ?? '';
+    const clientId = 'kuaifan-claw-manager';
+    const clientMode = 'webchat';
+    const role = 'operator';
+    const scopes = ['operator.admin', 'operator.approvals', 'operator.pairing', 'operator.write'];
+
+    let device: any = undefined;
+    if (typeof crypto !== 'undefined' && crypto.subtle) {
+      try {
+        const identity = await loadOrCreateDeviceIdentity();
+        const signedAtMs = Date.now();
+        const payload = buildSignaturePayload({
+          deviceId: identity.deviceId, clientId, clientMode,
+          role, scopes, signedAtMs, token,
+          nonce: this.connectNonce ?? '',
+        });
+        const signature = await signPayload(identity.privateKey, payload);
+        device = {
+          id: identity.deviceId,
+          publicKey: identity.publicKeyPem,
+          signature,
+          signedAt: signedAtMs,
+          nonce: this.connectNonce ?? undefined,
+        };
+      } catch (e) { console.warn('[gw] device identity failed:', e); }
+    }
+
     const connectBody: any = {
       type: 'req',
       id,
@@ -143,24 +235,22 @@ export class OpenClawGateway {
         minProtocol: 3,
         maxProtocol: 3,
         client: {
-          id: 'clawdbot-control-ui',
+          id: clientId,
           version: '1.0.0',
           platform: navigator.platform?.startsWith('Win') ? 'win32' :
                     navigator.platform?.startsWith('Mac') ? 'darwin' : 'linux',
-          mode: 'webchat',
+          mode: clientMode,
           instanceId: 'manager-' + Math.random().toString(36).slice(2, 8),
         },
-        role: 'operator',
-        scopes: ['operator.admin', 'operator.approvals', 'operator.pairing', 'operator.write'],
+        role,
+        scopes,
+        device,
         caps: [],
         auth: token ? { token } : undefined,
         userAgent: navigator.userAgent,
         locale: navigator.language,
       },
     };
-    if (this.connectNonce) {
-      connectBody.params.device = { nonce: this.connectNonce };
-    }
 
     return new Promise<void>((resolve) => {
       const pending: PendingRequest = {
@@ -254,7 +344,6 @@ export class OpenClawGateway {
   async stop() {
     this.closed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    // Reject all pending
     for (const [, pending] of this.pending) {
       clearTimeout(pending.timer);
       pending.reject(new Error('Connection closed'));
