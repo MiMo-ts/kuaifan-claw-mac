@@ -147,6 +147,7 @@ export class OpenClawGateway {
       const finalUrl = this.opts.url ?? url;
       const finalToken = this.opts.token ?? token;
       this.opts.token = finalToken;
+      console.log('[gw] start token:', finalToken ? finalToken.substring(0,8)+'...' : '(empty)', 'fromOpts:', !!this.opts.token, 'fromConfig:', !!token);
 
       this.ws = new WebSocket(finalUrl);
 
@@ -210,6 +211,7 @@ export class OpenClawGateway {
   private async sendConnect() {
     const id = String(this.nextId++);
     const token = this.opts.token ?? '';
+    console.log('[gw] sendConnect token:', token ? token.substring(0,8)+'...' : '(empty)');
     const clientId = 'clawdbot-control-ui';
     const clientMode = 'webchat';
     const role = 'operator';
