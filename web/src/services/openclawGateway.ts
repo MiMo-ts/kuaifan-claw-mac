@@ -136,11 +136,20 @@ export class OpenClawGateway {
     if (this.closed) return;
     this.readyPromise = new Promise((resolve) => { this.resolveReady = resolve; });
     try {
-      const { url, token } = await OpenClawGateway.resolveConnection();
+      // Always read token from Tauri backend
+      const { invoke } = await import('@tauri-apps/api/core');
+      let token = '';
+      try {
+        const info: any = await invoke('get_gateway_ws_info');
+        token = info?.token || '';
+        console.log('[gw] Tauri token:', token ? token.substring(0,8)+'...' : '(empty)');
+      } catch (e) {
+        console.error('[gw] Tauri invoke failed:', e);
+      }
+      
+      const { url } = await OpenClawGateway.resolveConnection();
       const finalUrl = this.opts.url ?? url;
-      const finalToken = this.opts.token ?? token;
-      this.opts.token = finalToken;
-      console.log('[gw] start token:', finalToken ? finalToken.substring(0,8)+'...' : '(empty)', 'fromOpts:', !!this.opts.token, 'fromConfig:', !!token);
+      this.opts.token = token;
 
       this.ws = new WebSocket(finalUrl);
 
@@ -204,7 +213,7 @@ export class OpenClawGateway {
   private async sendConnect() {
     const id = String(this.nextId++);
     const token = this.opts.token ?? '';
-    console.log('[gw] sendConnect token:', token ? token.substring(0,8)+'...' : '(empty)');
+    console.log('[gw] sendConnect token:', token ? token.substring(0,8)+'...' : '(empty)', 'opts.token:', this.opts.token ? 'set' : 'unset');
     const clientId = 'clawdbot-control-ui';
     const clientMode = 'webchat';
     const role = 'operator';
