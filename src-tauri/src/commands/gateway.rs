@@ -2794,6 +2794,20 @@ pub async fn get_gateway_status(
     })
 }
 
+/// 返回网关 WebSocket 连接信息（URL + token），供前端直连使用
+#[tauri::command]
+pub async fn get_gateway_ws_info(
+    data_dir: tauri::State<'_, crate::AppState>,
+) -> Result<serde_json::Value, String> {
+    let data_dir = data_dir.inner().get_data_dir();
+    let port = resolve_gateway_http_port(&data_dir);
+    let token = resolve_gateway_ws_token(&data_dir);
+    Ok(serde_json::json!({
+        "url": format!("ws://127.0.0.1:{}", port),
+        "token": token,
+    }))
+}
+
 /// 供 `start_gateway` 与「仅路径」场景复用（例如新建微信实例后需在无 `State` 时重启网关）。
 pub async fn start_gateway_with_data_dir_path(data_dir: &str) -> Result<String, String> {
     let openclaw_dir = format!("{}/openclaw-cn", data_dir);

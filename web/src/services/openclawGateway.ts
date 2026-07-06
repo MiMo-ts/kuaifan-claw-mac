@@ -121,19 +121,12 @@ export class OpenClawGateway {
     this.readyPromise = new Promise((resolve) => { this.resolveReady = resolve; });
   }
 
-  /** Resolve the gateway URL and token from openclaw.json config */
+  /** Resolve the gateway URL and token from backend */
   static async resolveConnection(port?: number): Promise<{ url: string; token: string }> {
     const { invoke } = await import('@tauri-apps/api/core');
     try {
-      const dataDir: string = await invoke('get_data_dir');
-      const { readTextFile } = await import('@tauri-apps/plugin-fs');
-      const { join } = await import('@tauri-apps/api/path');
-      const cfgPath = await join(dataDir, 'openclaw-cn', 'openclaw.json');
-      const content = await readTextFile(cfgPath);
-      const cfg = JSON.parse(content);
-      const gwPort = port || cfg?.gateway?.port || 18789;
-      const gwToken = cfg?.gateway?.auth?.token || '';
-      return { url: `ws://127.0.0.1:${gwPort}`, token: gwToken };
+      const info: { url: string; token: string } = await invoke('get_gateway_ws_info');
+      return info;
     } catch {
       return { url: `ws://127.0.0.1:${port || 18789}`, token: '' };
     }

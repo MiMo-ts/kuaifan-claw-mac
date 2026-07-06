@@ -1,4 +1,4 @@
-﻿// OpenClaw-CN Manager - Rust Backend
+// OpenClaw-CN Manager - Rust Backend
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -665,6 +665,7 @@ fn main() {
             commands::instance::delete_instance,
             commands::instance::toggle_instance,
             commands::gateway::get_gateway_status,
+            commands::gateway::get_gateway_ws_info,
             commands::gateway::start_gateway,
             commands::gateway::stop_gateway,
             commands::gateway::restart_gateway,
